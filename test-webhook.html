@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chatcone to Google Sheets Webhook Tester</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Sarabun:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0b0f19;
+      --bg-surface: #111827;
+      --bg-card: rgba(17, 24, 39, 0.75);
+      --border-color: rgba(255, 255, 255, 0.1);
+      --border-focus: #3b82f6;
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent-blue: #38bdf8;
+      --accent-indigo: #6366f1;
+      --accent-green: #10b981;
+      --accent-orange: #f59e0b;
+      --accent-red: #ef4444;
+      --font-main: 'Sarabun', 'Plus Jakarta Sans', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-primary);
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.12) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(99, 102, 241, 0.12) 0px, transparent 50%);
+      color: var(--text-primary);
+      font-family: var(--font-main);
+      min-height: 100vh;
+      padding: 32px 20px;
+      display: flex;
+      justify-content: center;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 1100px;
+    }
+
+    header {
+      margin-bottom: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 16px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .logo-area {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .icon-badge {
+      width: 48px;
+      height: 48px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #0284c7, #6366f1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      box-shadow: 0 8px 20px -4px rgba(2, 132, 199, 0.4);
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+
+    .badge-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 9999px;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: var(--accent-green);
+      font-size: 0.825rem;
+      font-weight: 500;
+    }
+
+    .badge-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      box-shadow: 0 0 10px var(--accent-green);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+
+    .grid-layout {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 24px;
+    }
+
+    @media (max-width: 900px) {
+      .grid-layout {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--bg-card);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border-color);
+      border-radius: 18px;
+      padding: 24px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    }
+
+    .card-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .form-group {
+      margin-bottom: 18px;
+    }
+
+    label {
+      display: block;
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+    }
+
+    input[type="text"], textarea, select {
+      width: 100%;
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 12px 14px;
+      color: var(--text-primary);
+      font-family: inherit;
+      font-size: 0.9rem;
+      transition: all 0.2s ease;
+    }
+
+    input[type="text"]:focus, textarea:focus, select:focus {
+      outline: none;
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+    }
+
+    textarea.code-editor {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      line-height: 1.5;
+      min-height: 280px;
+      resize: vertical;
+      color: #e2e8f0;
+      tab-size: 2;
+    }
+
+    .presets-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .btn-preset {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 0.775rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .btn-preset:hover, .btn-preset.active {
+      background: rgba(56, 189, 248, 0.15);
+      border-color: var(--accent-blue);
+      color: var(--accent-blue);
+    }
+
+    .btn-primary {
+      width: 100%;
+      background: linear-gradient(135deg, #0284c7, #4f46e5);
+      border: none;
+      color: #ffffff;
+      padding: 14px;
+      border-radius: 12px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      transition: all 0.2s ease;
+      box-shadow: 0 6px 20px -2px rgba(2, 132, 199, 0.4);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 25px -2px rgba(2, 132, 199, 0.5);
+    }
+
+    .btn-primary:active {
+      transform: translateY(0);
+    }
+
+    .btn-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .response-box {
+      background: #090d16;
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 16px;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      min-height: 180px;
+      max-height: 380px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      color: #94a3b8;
+    }
+
+    .info-box {
+      background: rgba(56, 189, 248, 0.06);
+      border: 1px solid rgba(56, 189, 248, 0.2);
+      border-radius: 12px;
+      padding: 16px;
+      margin-top: 18px;
+    }
+
+    .info-box h4 {
+      font-size: 0.9rem;
+      color: var(--accent-blue);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .info-box ul {
+      padding-left: 20px;
+      font-size: 0.825rem;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    .loader {
+      display: inline-block;
+      width: 18px;
+      height: 18px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-radius: 50%;
+      border-top-color: #fff;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <div class="logo-area">
+        <div class="icon-badge">💬</div>
+        <div>
+          <h1>Chatcone ➔ Google Sheets Tester</h1>
+          <div class="subtitle">จำลองและทดสอบการส่ง Webhook ประวัติแชทเข้า Google Sheets แบบ Real-time</div>
+        </div>
+      </div>
+      <div class="badge-status">
+        <div class="badge-dot"></div>
+        <span>Webhook Simulator Ready</span>
+      </div>
+    </header>
+
+    <div class="grid-layout">
+      <!-- Left Column: Payload Configuration -->
+      <div class="card">
+        <div class="card-title">
+          <span>⚙️ กำหนดค่าและ Payload</span>
+        </div>
+
+        <div class="form-group">
+          <label for="webhookUrl">Google Apps Script Web App URL (URL จากการ Deploy):</label>
+          <input 
+            type="text" 
+            id="webhookUrl" 
+            placeholder="https://script.google.com/macros/s/AKfycbx.../exec"
+          />
+        </div>
+
+        <div class="form-group">
+          <label>เลือกตัวอย่างข้อมูลจำลอง (Presets):</label>
+          <div class="presets-container">
+            <button type="button" class="btn-preset active" onclick="loadPreset('lineText', this)">LINE (ข้อความ)</button>
+            <button type="button" class="btn-preset" onclick="loadPreset('fbImage', this)">Facebook (ส่งรูปสลิป)</button>
+            <button type="button" class="btn-preset" onclick="loadPreset('adminReply', this)">Agent ตอบลูกค้า</button>
+            <button type="button" class="btn-preset" onclick="loadPreset('igDirect', this)">Instagram แชท</button>
+            <button type="button" class="btn-preset" onclick="loadPreset('multiEvents', this)">Batch (หลายข้อความ)</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="jsonPayload">JSON Payload (สามารถแก้ไขข้อความได้อิสระ):</label>
+          <textarea id="jsonPayload" class="code-editor" spellcheck="false"></textarea>
+        </div>
+
+        <button type="button" id="btnSend" class="btn-primary" onclick="sendWebhook()">
+          <span>🚀 ส่งข้อมูลเข้า Google Sheet (Send Webhook)</span>
+        </button>
+      </div>
+
+      <!-- Right Column: Response & Guide -->
+      <div class="card" style="display: flex; flex-direction: column;">
+        <div class="card-title">
+          <span>📡 ผลลัพธ์การตอบกลับ (Response)</span>
+        </div>
+
+        <div id="responseBox" class="response-box">
+ยังไม่มีการส่งข้อมูล...
+กรุณากรอก Google Apps Script URL ทางซ้าย แล้วกดปุ่ม "ส่งข้อมูลเข้า Google Sheet"
+        </div>
+
+        <div class="info-box" style="margin-top: 20px;">
+          <h4>💡 ขั้นตอนการเชื่อมต่อ:</h4>
+          <ul>
+            <li>เปิด Google Sheet &gt; ไปที่เมนู <b>Extensions &gt; Apps Script</b></li>
+            <li>วางโค้ดจากไฟล์ <code>ChatconeSync.gs</code></li>
+            <li>กด <b>Deploy &gt; New deployment &gt; Web app</b></li>
+            <li>ตั้งค่าสิทธิ์เข้าถึง: <b>Anyone (ทุกคน)</b></li>
+            <li>ก๊อปปี้ URL มาใส่ในช่องด้านบน แล้วนำไปใส่ในระบบ <b>portal.chatcone.com</b></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const presets = {
+      lineText: {
+        events: [
+          {
+            timestamp: new Date().toISOString(),
+            channel: "LINE OA",
+            sender_type: "Customer",
+            sender_name: "คุณกิตติศักดิ์",
+            customer_id: "LINE_U778899aabbcc",
+            message_type: "text",
+            message: {
+              text: "สอบถามสินค้ามีพร้อมส่งไหมครับ แล้วจัดส่งกี่วันถึง?"
+            },
+            conversation_id: "conv_line_1001",
+            message_id: "msg_" + Date.now()
+          }
+        ]
+      },
+      fbImage: {
+        events: [
+          {
+            timestamp: new Date().toISOString(),
+            channel: "Facebook Messenger",
+            sender_type: "Customer",
+            sender_name: "Sureeporn S.",
+            customer_id: "FB_1092837465",
+            message_type: "image",
+            media_url: "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?w=600",
+            message: {
+              type: "image",
+              text: "โอนเงินยอด 1,590 บาท เรียบร้อยแล้วค่ะ แนบสลิปให้แล้วนะคะ"
+            },
+            conversation_id: "conv_fb_2002",
+            message_id: "msg_" + Date.now()
+          }
+        ]
+      },
+      adminReply: {
+        events: [
+          {
+            timestamp: new Date().toISOString(),
+            channel: "LINE OA",
+            sender_type: "Agent",
+            sender_name: "Admin ออย",
+            customer_id: "LINE_U778899aabbcc",
+            message_type: "text",
+            message: {
+              text: "ตรวจสอบยอดเงินและที่อยู่จัดส่งเรียบร้อยค่ะ สินค้าจัดส่งรอบบ่ายวันนี้นะคะ ขอบพระคุณค่ะ 🙏"
+            },
+            conversation_id: "conv_line_1001",
+            message_id: "msg_" + Date.now()
+          }
+        ]
+      },
+      igDirect: {
+        events: [
+          {
+            timestamp: new Date().toISOString(),
+            channel: "Instagram",
+            sender_type: "Customer",
+            sender_name: "fashion_lover_bkk",
+            customer_id: "IG_5544332211",
+            message_type: "text",
+            message: {
+              text: "รุ่นนี้มีสีครีมไซส์ M เหลือไหมคะ?"
+            },
+            conversation_id: "conv_ig_3003",
+            message_id: "msg_" + Date.now()
+          }
+        ]
+      },
+      multiEvents: {
+        events: [
+          {
+            timestamp: new Date(Date.now() - 60000).toISOString(),
+            channel: "Webchat",
+            sender_type: "Customer",
+            sender_name: "ผู้เยี่ยมชม #4082",
+            customer_id: "WEB_4082",
+            message_type: "text",
+            message: "มีหน้าร้านให้ลองสินค้าไหมครับ",
+            conversation_id: "conv_web_4004",
+            message_id: "msg_batch_1"
+          },
+          {
+            timestamp: new Date().toISOString(),
+            channel: "Webchat",
+            sender_type: "Agent",
+            sender_name: "Admin พลอย",
+            customer_id: "WEB_4082",
+            message_type: "text",
+            message: "มีหน้าร้านอยู่ที่สาขาสยามสแควร์ ชั้น 2 ค่ะ เปิด 10:00 - 20:00 น.",
+            conversation_id: "conv_web_4004",
+            message_id: "msg_batch_2"
+          }
+        ]
+      }
+    };
+
+    function loadPreset(key, btnElem) {
+      document.querySelectorAll('.btn-preset').forEach(btn => btn.classList.remove('active'));
+      if (btnElem) {
+        btnElem.classList.add('active');
+      } else {
+        const btn = document.querySelector(`button[onclick*="'${key}'"]`);
+        if (btn) btn.classList.add('active');
+      }
+      const payload = presets[key];
+      if (payload && payload.events) {
+        payload.events.forEach(e => {
+          e.timestamp = new Date().toISOString();
+          e.message_id = "msg_" + Math.floor(Math.random() * 1000000);
+        });
+      }
+      if (payload) {
+        document.getElementById('jsonPayload').value = JSON.stringify(payload, null, 2);
+      }
+    }
+
+    async function sendWebhook() {
+      const urlInput = document.getElementById('webhookUrl');
+      const url = urlInput.value.trim();
+      let rawPayload = document.getElementById('jsonPayload').value.trim();
+      const responseBox = document.getElementById('responseBox');
+      const btnSend = document.getElementById('btnSend');
+
+      if (!url) {
+        alert('กรุณากรอก Google Apps Script Web App URL ก่อนกดทดสอบ');
+        urlInput.focus();
+        return;
+      }
+
+      // Save URL to localStorage for convenience
+      try {
+        localStorage.setItem('chatcone_test_webhook_url', url);
+      } catch (e) {}
+
+      // If payload is empty, automatically load default preset
+      if (!rawPayload) {
+        loadPreset('lineText');
+        rawPayload = document.getElementById('jsonPayload').value.trim();
+      }
+
+      let parsedPayload;
+      try {
+        parsedPayload = JSON.parse(rawPayload);
+      } catch (err) {
+        alert('รูปแบบ JSON ไม่ถูกต้อง: ' + err.message + '\n\nคำแนะนำ: ลองกดปุ่มตัวอย่าง เช่น "LINE (ข้อความ)" เพื่อโหลดข้อมูลใหม่อีกครั้ง');
+        return;
+      }
+
+      btnSend.disabled = true;
+      btnSend.innerHTML = '<span class="loader"></span> กำลังส่งข้อมูลไปยัง Google Sheets...';
+      responseBox.innerHTML = '⏳ กำลังส่งข้อมูลไปยัง:\n' + url + '\n\nPayload:\n' + JSON.stringify(parsedPayload, null, 2);
+
+      try {
+        const startTime = Date.now();
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8' // GAS accepts text/plain to avoid preflight CORS blockage
+          },
+          body: JSON.stringify(parsedPayload)
+        });
+
+        const timeTaken = Date.now() - startTime;
+        const text = await response.text();
+        
+        let formattedRes = text;
+        try {
+          const json = JSON.parse(text);
+          formattedRes = JSON.stringify(json, null, 2);
+        } catch (e) {}
+
+        responseBox.innerHTML = `✅ [HTTP ${response.status}] ทำงานสำเร็จ (${timeTaken} ms)\n\nผลตอบกลับจาก Google Apps Script:\n${formattedRes}\n\n👉 เช็คดูใน Google Sheet ของคุณได้ทันที! จะมีแถวใหม่เพิ่มขึ้นมา`;
+        responseBox.style.color = '#38bdf8';
+
+      } catch (error) {
+        console.error(error);
+        responseBox.innerHTML = `❌ เกิดข้อผิดพลาดในการส่ง Webhook:\n\n${error.message}\n\nสาเหตุที่พบบ่อย:\n1. ยังไม่ได้เลือก Who has access เป็น "Anyone" ในการ Deploy Web App\n2. ใส่ URL ไม่ถูกต้อง\n3. สิทธิ์การเข้าถึง Google Sheet ยังไม่ได้รับอนุญาต`;
+        responseBox.style.color = '#f87171';
+      } finally {
+        btnSend.disabled = false;
+        btnSend.innerHTML = '<span>🚀 ส่งข้อมูลเข้า Google Sheet (Send Webhook)</span>';
+      }
+    }
+
+    // Restore saved URL if available
+    try {
+      const savedUrl = localStorage.getItem('chatcone_test_webhook_url');
+      if (savedUrl && !document.getElementById('webhookUrl').value) {
+        document.getElementById('webhookUrl').value = savedUrl;
+      }
+    } catch (e) {}
+
+    // Initialize with first preset safely
+    loadPreset('lineText');
+  </script>
+</body>
+</html>
