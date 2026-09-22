@@ -339,6 +339,7 @@
           <label>เลือกตัวอย่างข้อมูลจำลอง (Presets):</label>
           <div class="presets-container">
             <button type="button" class="btn-preset active" onclick="loadPreset('lineText', this)">LINE (ข้อความ)</button>
+            <button type="button" class="btn-preset" onclick="loadPreset('quotationPdf', this)">📄 ใบเสนอราคา PDF (39,000 บ.)</button>
             <button type="button" class="btn-preset" onclick="loadPreset('fbImage', this)">Facebook (ส่งรูปสลิป)</button>
             <button type="button" class="btn-preset" onclick="loadPreset('adminReply', this)">Agent ตอบลูกค้า</button>
             <button type="button" class="btn-preset" onclick="loadPreset('igDirect', this)">Instagram แชท</button>
@@ -397,6 +398,29 @@
             },
             conversation_id: "conv_line_1001",
             message_id: "msg_" + Date.now()
+          }
+        ]
+      },
+      quotationPdf: {
+        events: [
+          {
+            timestamp: new Date().toISOString(),
+            channel: "LINE OA",
+            sender_type: "Agent",
+            sender_name: "LYN NIRADA",
+            customer_id: "LINE_U778899aabbcc",
+            message_type: "file",
+            file_name: "QT0926-01155.ลัคกี เจแปน.pdf",
+            media_url: "https://portal.chatcone.com/storage/files/QT0926-01155.pdf",
+            quotation_no: "QT0926-01155",
+            grand_total: 39000.00,
+            response_time: 209,
+            message: {
+              type: "file",
+              text: "QT0926-01155.ลัคกี เจแปน.pdf"
+            },
+            conversation_id: "conv_line_1001",
+            message_id: "msg_pdf_" + Date.now()
           }
         ]
       },

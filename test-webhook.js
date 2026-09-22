@@ -23,6 +23,7 @@ const samplePayload = {
   events: [
     {
       timestamp: new Date().toISOString(),
+      account: "Sevenfive Distributor",
       channel: "LINE OA",
       sender_type: "Customer",
       sender_name: "สมชาย ทดสอบระบบ",
@@ -36,16 +37,37 @@ const samplePayload = {
     },
     {
       timestamp: new Date().toISOString(),
+      account: "Sevenfive Distributor",
       channel: "LINE OA",
       sender_type: "Agent",
-      sender_name: "Admin แนน",
+      sender_name: "LYN NIRADA",
       customer_id: "U998877665544",
-      message_type: "text",
+      message_type: "file",
+      file_name: "QT0926-01155.ลัคกี เจแปน.pdf",
+      media_url: "https://portal.chatcone.com/storage/files/QT0926-01155.pdf",
+      quotation_no: "QT0926-01155",
+      grand_total: 39000.00,
+      response_time: 209,
       message: {
-        text: "ยินดีต้อนรับค่ะ ได้รับข้อความเรียบร้อยแล้วนะคะ"
+        type: "file",
+        text: "QT0926-01155.ลัคกี เจแปน.pdf"
       },
       conversation_id: "conv_test_12345",
       message_id: "msg_cli_" + (Date.now() + 1)
+    },
+    {
+      timestamp: new Date().toISOString(),
+      account: "SevenfiveOfficial",
+      channel: "Facebook Messenger",
+      sender_type: "Customer",
+      sender_name: "Customer John",
+      customer_id: "FB_1122334455",
+      message_type: "text",
+      message: {
+        text: "สอบถามสินค้าในเพจ SevenfiveOfficial ครับ"
+      },
+      conversation_id: "conv_fb_9988",
+      message_id: "msg_cli_" + (Date.now() + 2)
     }
   ]
 };
