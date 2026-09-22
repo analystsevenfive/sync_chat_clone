@@ -103,19 +103,28 @@
 
 ---
 
-## 🏢 รองรับ 2 บัญชี (Multi-Account: Sevenfive Distributor & SevenfiveOfficial)
+## 🏢 รองรับ 2 บัญชีแบบตรวจจับอัตโนมัติ (Multi-Account Auto-Detection)
 
-ระบบใน [sync-now.js](file:///c:/Users/0125024/Documents/sync-chat-clone/sync-now.js) จะวนลูปดึงข้อมูลจากทั้ง 2 บัญชีอัตโนมัติ:
-1. **Sevenfive Distributor** (ดึงทุกห้องและทุกช่องทาง เช่น LINE OA, Facebook)
-2. **SevenfiveOfficial** (ดึงทุกห้องและทุกช่องทาง เช่น Facebook Messenger, LINE OA)
-ทุกข้อความจะถูกบันทึกลง Google Sheets เดียวกัน โดยมีระบุในคอลัมน์ **B (Account)** ไว้อย่างชัดเจน
+ระบบใน [ChatconeSync.gs](file:///c:/Users/HP/Documents/MyProjects/sync_chat_clone/ChatconeSync.gs) และ [sync-now.js](file:///c:/Users/HP/Documents/MyProjects/sync_chat_clone/sync-now.js) รองรับการแยกบัญชีอัตโนมัติ (Multi-Account) จาก Company ID และ Channel ID ของ Chatcone:
+1. **SevenfiveOfficial** (Company ID: `68819f3edd184b81dc6ac35e`, Slug: `G6zVti0a`)
+   - Facebook Messenger (`6881c67ddd184b54a06b025c`)
+   - LINE OA (`68819f3edd184bf5276ac35f`)
+2. **Sevenfive Distributor** (Company ID: `68819f44dd184b85876ac383`, Slug: `x0Wteloe`)
+   - LINE OA (`6881b04f2d07422b089ec4c8`)
+   - Facebook Messenger (`68819f44dd184bb7f86ac384`)
+   - Webchat / Other (`68844b588be8b73f96d987f3`)
+
+ทุกข้อความที่ส่งเข้ามาไม่ว่าจะจาก Webhook หรือการซิงค์ จะถูกวิเคราะห์ ID แล้วบันทึกชื่อบัญชีที่ถูกต้องลงคอลัมน์ **B (Account)** โดยอัตโนมัติ
 
 ---
 
 ## 💡 คำแนะนำเพิ่มเติม & Troubleshooting
 
-- **การดึงข้อมูล 2 วันล่าสุด:** ระบบถูกตั้งค่าให้ดึงย้อนหลัง 1 วัน รวมวันนี้เป็น 2 วัน (`FILTER_LAST_DAYS = 2`) ตั้งแต่เที่ยงคืนของเมื่อวาน (00:00:00) จนถึงปัจจุบัน
-- **หากต้องการอัปเกรดตารางเดิมที่มีอยู่แล้ว:** ให้เปิด Google Sheets ไปที่ Apps Script เลือกฟังก์ชัน **`fixAndCleanColumns`** แล้วกด **"เรียกใช้" (Run)** ระบบจะจัดระเบียบตารางเดิม กรองเฉพาะ 2 วันล่าสุด และอัปเกรดเป็น 16 คอลัมน์ทันที
+- **อย่าลืมใส่ Webhook ทั้ง 2 บัญชี:** บน Chatcone (portal.chatcone.com) บัญชี Sevenfive Distributor และ SevenfiveOfficial เป็น 2 องค์กรแยกกัน คุณต้องสลับไปที่หน้าตั้งค่าของทั้ง 2 บัญชีแล้วใส่ Webhook URL ทั้งคู่
+- **การอัปเดตข้อมูลเดิมในชีตให้ถูกต้อง:** 
+  1. นำโค้ด [ChatconeSync.gs](file:///c:/Users/HP/Documents/MyProjects/sync_chat_clone/ChatconeSync.gs) ไปวางทับใน Apps Script แล้วกดบันทึก
+  2. รีเฟรชหน้า Google Sheets จะพบเมนูด้านบนชื่อ **`🚀 Chatcone Sync`**
+  3. คลิก **`🚀 Chatcone Sync` > `🔄 จัดระเบียบตาราง & อัปเดตบัญชีอัตโนมัติ`** ระบบจะตรวจจับประวัติข้อมูลเดิมและเปลี่ยนชื่อบัญชีตาม ID ให้ถูกต้องทันที
+- **การดึงข้อมูล 2 วันล่าสุด:** ระบบถูกตั้งค่าให้กรองย้อนหลัง 1 วัน รวมวันนี้เป็น 2 วัน (`FILTER_LAST_DAYS = 2`) ตั้งแต่เที่ยงคืนของเมื่อวาน (00:00:00) จนถึงปัจจุบัน
 - **หากข้อมูลไม่เข้า:** ตรวจสอบตอน Deploy ว่าในช่อง **"ใครมีสิทธิ์เข้าถึง (Who has access)"** ได้เลือกเป็น **"ทุกคน (Anyone)"** หรือไม่ หากไม่ได้เลือก ให้กด *Deploy > Manage deployments > Edit > เลือก Anyone > Deploy ใหม่อีกครั้ง*
-- **การปรับแต่งเพิ่มเติม:** คุณสามารถเปลี่ยนชื่อ Sheet จาก `"Chat_Logs"` เป็นชื่ออื่นได้ที่บรรทัด `const SHEET_NAME = "ชื่อชีต";` ในไฟล์ `ChatconeSync.gs`
 - **ระบบ Concurrency Lock:** สคริปต์มีการใส่ `LockService` เพื่อรองรับกรณีที่มีลูกค้าทักเข้ามาพร้อมกันหลายคนโดยที่แถวข้อมูลจะไม่ชนหรือทับซ้อนกัน

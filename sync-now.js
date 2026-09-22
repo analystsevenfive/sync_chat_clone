@@ -2,9 +2,9 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
-const GOOGLE_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbzH7Ip9zBoa58KgEGEjhwEK6rKfPezsiTUVguYPDVnF27RONxOGFRWK2zeExou6KyYFOg/exec';
-const TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiNjg4MWE1M2VjYjM3ODgwMGFiMGNjNzRkIiwiaWF0IjoxNzg5OTU0NjEyLCJleHAiOjE3OTAwNDEwMTJ9.rnmcOSAULbgQEw1WO5Psiw9fQoNrAEYUExShfNuPZ4I';
-const AGENT_ID = '6881a53ecb378800ab0cc74d';
+const GOOGLE_WEBHOOK_URL = process.env.GOOGLE_WEBHOOK_URL || 'https://script.google.com/macros/s/AKfycbzH7Ip9zBoa58KgEGEjhwEK6rKfPezsiTUVguYPDVnF27RONxOGFRWK2zeExou6KyYFOg/exec';
+const TOKEN = process.env.CHATCONE_TOKEN || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiNjg4MWE1M2VjYjM3ODgwMGFiMGNjNzRkIiwiaWF0IjoxNzkwMDg4NzkxLCJleHAiOjE3OTAxNzUxOTF9._ouiRgvu9tG6wZ9wPRgCZTldgyPdreBejtTKtsHeJyU';
+const AGENT_ID = process.env.CHATCONE_AGENT_ID || '6881a53ecb378800ab0cc74d';
 
 // รายชื่อ 2 บัญชีของ Chatcone (Sevenfive Distributor และ SevenfiveOfficial)
 const ACCOUNTS = [
@@ -79,6 +79,8 @@ function chatconeRequest(accountConfig, channelId, reqPath, method, body) {
       options.headers['Content-Length'] = Buffer.byteLength(postData);
     }
 
+    options.timeout = 10000;
+
     const req = https.request(options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
@@ -90,7 +92,13 @@ function chatconeRequest(accountConfig, channelId, reqPath, method, body) {
         }
       });
     });
-    req.on('error', reject);
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ status: 408, error: 'Request timeout' });
+    });
+    req.on('error', (e) => {
+      resolve({ status: 500, error: e.message });
+    });
     if (postData) req.write(postData);
     req.end();
   });
@@ -123,8 +131,9 @@ function formatThaiTime(timestamp) {
   return String(timestamp);
 }
 
-// กำหนดจำนวนวันย้อนหลัง: 1 วันก่อนหน้า + วันนี้ = 2 วันล่าสุด
-const SYNC_DAYS = 2;
+// กำหนดจำนวนวันย้อนหลัง: 2 วันล่าสุด (เมื่อวานและวันนี้)
+const customDaysArg = process.argv.find(arg => arg.startsWith('--days='));
+const SYNC_DAYS = customDaysArg ? parseInt(customDaysArg.split('=')[1], 10) : 2;
 
 function getSyncStartDate() {
   const now = new Date();
@@ -146,6 +155,22 @@ function isWithinSyncWindow(timestamp) {
   } catch (e) {
     return true;
   }
+}
+
+function getFollowerLastAct(follower) {
+  if (!follower) return null;
+  if (follower.last_livechat) {
+    const lc = follower.last_livechat;
+    if (lc.last_chat_message && lc.last_chat_message.timestamp) {
+      return lc.last_chat_message.timestamp;
+    }
+    if (lc.updated_at) return lc.updated_at;
+    if (lc.switch_mode_at) return lc.switch_mode_at;
+  }
+  if (follower.last_message) {
+    return follower.last_message.timestamp || follower.last_message.sent_at || follower.last_message.created_at;
+  }
+  return follower.updated_at || null;
 }
 
 async function run() {
@@ -215,7 +240,7 @@ async function run() {
 
         // ตรวจสอบว่ามีห้องไหนในหน้านี้ที่มีการคุยอยู่ในช่วง 2 วันล่าสุดบ้าง
         const anyRecent = batch.some(item => {
-          const act = item.updated_at || (item.last_message && (item.last_message.timestamp || item.last_message.sent_at));
+          const act = getFollowerLastAct(item);
           return !act || isWithinSyncWindow(act);
         });
 
@@ -242,7 +267,7 @@ async function run() {
         const customerId = follower.social_id || follower._id;
 
         // ถ้าห้องนี้ไม่มีการคุยใน 2 วันล่าสุดเลย สามารถข้ามได้ทันที
-        const lastAct = follower.updated_at || (follower.last_message && (follower.last_message.timestamp || follower.last_message.sent_at));
+        const lastAct = getFollowerLastAct(follower);
         if (lastAct && !isWithinSyncWindow(lastAct)) {
           continue;
         }
@@ -322,30 +347,61 @@ async function run() {
             let msgType = m.type || 'text';
             let fileName = '';
 
+            // ตรวจสอบ messages_sent
             if (m.messages_sent && m.messages_sent.length > 0) {
               const sent = m.messages_sent[0];
               text = sent.text || sent.message || '';
               msgType = sent.type || msgType;
               fileName = sent.file_name || sent.fileName || sent.name || sent.title || '';
-              mediaUrl = sent.file_url || sent.file || sent.download_url || sent.media_url || sent.url || sent.image || '';
+              mediaUrl = sent.file_path || sent.filePath || sent.file_url || sent.file || sent.download_url || sent.media_url || sent.url || sent.image || '';
+
+              // ตรวจสอบ LINE Flex Message (กรณีแอดมินส่งใบเสนอราคา QT จาก Chatcone ไป LINE OA)
+              if (sent.type === 'flex' || sent.contents) {
+                const flexStr = typeof sent.contents === 'string' ? sent.contents : JSON.stringify(sent.contents || sent);
+                const nameMatch = flexStr.match(/[\"']([^\"']*?\.pdf)[\"']/i) || flexStr.match(/(QT[\w-]+\.[^\"\s]+)/i);
+                if (nameMatch) fileName = nameMatch[1];
+                const pdfUriMatch = flexStr.match(/https:\/\/[^\"\s]+?\.pdf/i);
+                const actionUriMatch = flexStr.match(/\"uri\"\s*:\s*\"(https:\/\/[^\"]+)\"/i);
+                if (pdfUriMatch) {
+                  mediaUrl = pdfUriMatch[0].replace(/[\\\"']/g, '');
+                } else if (actionUriMatch) {
+                  mediaUrl = actionUriMatch[1].replace(/[\\\"']/g, '');
+                }
+                if (fileName || (mediaUrl && mediaUrl.includes('.pdf'))) {
+                  msgType = 'file';
+                  if (!text || text === 'Send Files' || text === 'Send File') {
+                    text = fileName || 'Quotation PDF';
+                  }
+                }
+              }
             }
-            if (!mediaUrl && (m.file_url || m.file || m.url || m.media_url)) {
-              mediaUrl = m.file_url || m.file || m.url || m.media_url;
+
+            // ตรวจสอบฟิลด์ตรงของข้อความ
+            if (!mediaUrl && (m.file_path || m.filePath || m.file_url || m.file || m.url || m.media_url)) {
+              mediaUrl = m.file_path || m.filePath || m.file_url || m.file || m.url || m.media_url;
             }
-            if (!fileName && m.message_title) {
-              fileName = m.message_title;
+            if (!fileName && (m.fileName || m.file_name || m.message_title)) {
+              fileName = m.fileName || m.file_name || m.message_title;
             }
             if (!text && fileName) {
               text = fileName;
             }
 
-            // Check for Quotation / PDF
+            // ตรวจสอบว่าเป็นไฟล์ PDF หรือเอกสาร QT
             let quotationNo = '';
             let grandTotal = '';
-            const isPdf = msgType === 'file' || msgType === 'pdf' || (fileName && fileName.toLowerCase().endsWith('.pdf')) || (text && text.toLowerCase().endsWith('.pdf'));
+            const isPdf = msgType === 'file' || msgType === 'pdf' ||
+              (fileName && fileName.toLowerCase().endsWith('.pdf')) ||
+              (text && text.toLowerCase().endsWith('.pdf')) ||
+              (mediaUrl && mediaUrl.toLowerCase().includes('.pdf')) ||
+              /QT\d+/i.test(fileName || text);
+
             if (isPdf) {
               msgType = 'file';
-              const qMatch = (fileName || text).match(/(?:QT|QUO|INV)[\w-]+/i);
+              if (!text || text === 'Send Files' || text === 'Send File') {
+                text = fileName || 'Quotation PDF';
+              }
+              const qMatch = (fileName || text || mediaUrl).match(/(?:QT|QUO|INV)[\w-]+/i);
               if (qMatch) {
                 quotationNo = qMatch[0].toUpperCase();
               }
@@ -369,6 +425,9 @@ async function run() {
             allNewEvents.push({
               timestamp: timeFormatted,
               account: account.name,
+              company_id: account.company_id,
+              channel_id: channel.id,
+              slug: account.slug,
               channel: channelDisplayName,
               sender_type: senderType,
               sender_name: senderName,

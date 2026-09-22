@@ -21,13 +21,159 @@
 
 // กำหนดชื่อชีตที่ต้องการบันทึกข้อมูล (หากไม่มีระบบจะสร้างให้อัตโนมัติ)
 const SHEET_NAME = "Chat_Logs";
+const LOG_SHEET_NAME = "Sync_Logs";
 
 // กำหนด Timezone สำหรับเวลาในประเทศไทย
 const TIMEZONE = "Asia/Bangkok";
 const DATE_FORMAT = "yyyy-MM-dd HH:mm:ss";
 
-// กรองเฉพาะข้อความย้อนหลัง 1 วัน รวมวันนี้ = 2 วันล่าสุด (0 = เอาทั้งหมดไม่กรอง)
+// กรองเฉพาะข้อความ 2 วันล่าสุด (เมื่อวานและวันนี้ ตั้งแต่เมื่อวาน 00:00:00 น. เป็นต้นมา)
 const FILTER_LAST_DAYS = 2;
+
+// =========================================================================
+// 🏢 การตั้งค่าและตรวจจับบัญชีอัตโนมัติ (Multi-Account Auto-Detection)
+// =========================================================================
+const KNOWN_ACCOUNTS = {
+  // SevenfiveOfficial
+  '68819f3edd184b81dc6ac35e': 'SevenfiveOfficial', // company_id
+  '6881c67ddd184b54a06b025c': 'SevenfiveOfficial', // FB Messenger channel_id
+  '68819f3edd184bf5276ac35f': 'SevenfiveOfficial', // LINE OA channel_id
+  'g6zvti0a': 'SevenfiveOfficial',                 // slug
+  // SevenfiveOfficial Conversation IDs & Customer IDs
+  '6ab236169c044f50b2d4f07d': 'SevenfiveOfficial', // Vatsana Ngaovongsa conversation_id
+  '68e354479c044f50b2ff1f84': 'SevenfiveOfficial', // Yim Pornpitra conversation_id
+  '6ab1c3d49c044f50b2f735f9': 'SevenfiveOfficial', // MaPrang Sawasdee conversation_id
+  '6aaa7e429c044f50b245f8ab': 'SevenfiveOfficial', // Chefkareem Bunchom conversation_id
+  '6aaa52929c044f50b20c7040': 'SevenfiveOfficial', // Henglian Foodmachinery conversation_id
+  '28411662208496281': 'SevenfiveOfficial',         // Vatsana social_id
+  '8467799049993319': 'SevenfiveOfficial',          // Yim social_id
+  '28363069283392839': 'SevenfiveOfficial',         // MaPrang social_id
+  '27863191193295626': 'SevenfiveOfficial',
+  '28976110988648055': 'SevenfiveOfficial',
+
+  // Sevenfive Distributor
+  '68819f44dd184b85876ac383': 'Sevenfive Distributor', // company_id
+  '6881b04f2d07422b089ec4c8': 'Sevenfive Distributor', // LINE OA channel_id
+  '68819f44dd184bb7f86ac384': 'Sevenfive Distributor', // FB Messenger channel_id
+  '68844b588be8b73f96d987f3': 'Sevenfive Distributor', // Webchat channel_id
+  'x0wteloe': 'Sevenfive Distributor'                  // slug
+};
+
+// รายชื่อลูกค้าเฉพาะของ SevenfiveOfficial
+const OFFICIAL_KNOWN_NAMES = [
+  'vatsana',
+  'ngaovongsa',
+  'yim pornpitra',
+  'maprang',
+  'sawasdee',
+  'chefkareem',
+  'henglian'
+];
+
+/**
+ * 🏢 ระบบตรวจจับชื่อบัญชีอัตโนมัติ (Auto-Detect Account)
+ * ตรวจสอบตามลำดับ:
+ * 1. URL Query Parameter (?account=...)
+ * 2. ฟิลด์ account หรือ account_name หรือ company_name ที่ระบุมา
+ * 3. Company ID, Channel ID, Conversation ID, Customer ID จากตาราง KNOWN_ACCOUNTS
+ * 4. ตรวจจากชื่อลูกค้า/ผู้ส่งที่ทราบว่าเป็นของ SevenfiveOfficial
+ * 5. ตรวจจาก Slug หรือ Referer URL
+ * 6. ค่าเดิม (Fallback)
+ */
+function resolveAccountName(item, payload, e, fallbackValue) {
+  // 1. ถ้ามี URL query parameter เช่น ?account=SevenfiveOfficial
+  if (e && e.parameter && e.parameter.account) {
+    const acc = String(e.parameter.account).trim();
+    if (/official/i.test(acc)) return "SevenfiveOfficial";
+    if (/distributor/i.test(acc)) return "Sevenfive Distributor";
+    return acc;
+  }
+
+  // 2. ถ้ามีชื่อบัญชีระบุมาตรงๆ ใน item หรือ payload
+  const explicit = (item && (item.account || item.account_name || item.company_name)) ||
+                   (payload && (payload.account || payload.account_name || payload.company_name));
+  if (explicit && typeof explicit === "string") {
+    const trimmed = explicit.trim();
+    if (/official/i.test(trimmed)) return "SevenfiveOfficial";
+    if (/distributor/i.test(trimmed)) return "Sevenfive Distributor";
+    if (trimmed !== "Chatcone") return trimmed;
+  }
+
+  // 3. รวม key ที่อาจเป็น ID จาก item และ payload
+  const candidateIds = [];
+
+  function collectIds(obj) {
+    if (!obj || typeof obj !== "object") return;
+    if (obj.company_id) candidateIds.push(String(obj.company_id).toLowerCase());
+    if (obj.companyId) candidateIds.push(String(obj.companyId).toLowerCase());
+    if (typeof obj.company === "string") candidateIds.push(obj.company.toLowerCase());
+    if (obj.channel_id) candidateIds.push(String(obj.channel_id).toLowerCase());
+    if (obj.channelId) candidateIds.push(String(obj.channelId).toLowerCase());
+    if (obj.slug) candidateIds.push(String(obj.slug).toLowerCase());
+    if (obj.company_slug) candidateIds.push(String(obj.company_slug).toLowerCase());
+    if (obj.conversation_id) candidateIds.push(String(obj.conversation_id).toLowerCase());
+    if (obj.room_id) candidateIds.push(String(obj.room_id).toLowerCase());
+    if (obj.customer_id) candidateIds.push(String(obj.customer_id).toLowerCase());
+    if (obj.user_id) candidateIds.push(String(obj.user_id).toLowerCase());
+    if (obj.social_id) candidateIds.push(String(obj.social_id).toLowerCase());
+    if (obj.channel && typeof obj.channel === "object") {
+      if (obj.channel.id) candidateIds.push(String(obj.channel.id).toLowerCase());
+      if (obj.channel._id) candidateIds.push(String(obj.channel._id).toLowerCase());
+      if (obj.channel.channel_id) candidateIds.push(String(obj.channel.channel_id).toLowerCase());
+    }
+    if (obj.follower && typeof obj.follower === "object") {
+      if (obj.follower._id) candidateIds.push(String(obj.follower._id).toLowerCase());
+      if (obj.follower.social_id) candidateIds.push(String(obj.follower.social_id).toLowerCase());
+      if (obj.follower.channel_id) candidateIds.push(String(obj.follower.channel_id).toLowerCase());
+    }
+    if (obj.chat && typeof obj.chat === "object") {
+      if (obj.chat.company_id) candidateIds.push(String(obj.chat.company_id).toLowerCase());
+      if (obj.chat.channel_id) candidateIds.push(String(obj.chat.channel_id).toLowerCase());
+    }
+  }
+
+  collectIds(item);
+  collectIds(payload);
+
+  for (let k = 0; k < candidateIds.length; k++) {
+    const id = candidateIds[k];
+    if (KNOWN_ACCOUNTS[id]) {
+      return KNOWN_ACCOUNTS[id];
+    }
+  }
+
+  // 4. ตรวจจากชื่อลูกค้าหรือผู้ส่ง
+  const nameToCheck = String(
+    (item && (item.sender_name || item.customer_name || item.name)) ||
+    (payload && (payload.sender_name || payload.customer_name || payload.name)) ||
+    ""
+  ).toLowerCase().trim();
+
+  if (nameToCheck) {
+    for (let n = 0; n < OFFICIAL_KNOWN_NAMES.length; n++) {
+      if (nameToCheck.includes(OFFICIAL_KNOWN_NAMES[n])) {
+        return "SevenfiveOfficial";
+      }
+    }
+  }
+
+  // 5. ตรวจจาก URL หรือ Referer ใน Payload
+  const referer = String(
+    (item && (item.referer || item.origin)) ||
+    (payload && (payload.referer || payload.origin)) ||
+    ""
+  ).toLowerCase();
+
+  if (referer.includes("g6zvti0a")) return "SevenfiveOfficial";
+  if (referer.includes("x0wteloe")) return "Sevenfive Distributor";
+
+  // 6. หากส่ง fallbackValue มา (และไม่ใช่ค่าว่างและไม่ใช่ Chatcone) ให้ใช้ค่านั้น
+  if (fallbackValue && typeof fallbackValue === "string" && fallbackValue.trim() && fallbackValue !== "Chatcone") {
+    return fallbackValue.trim();
+  }
+
+  return "Sevenfive Distributor";
+}
 
 /**
  * คำนวณเวลาเริ่มต้นของช่วงที่ต้องการดึง (เมื่อวาน 00:00:00 ตามเวลาประเทศไทย)
@@ -146,8 +292,8 @@ function doPost(e) {
       }
     }
 
-    // แปลงข้อมูลจาก Chatcone ให้อยู่ในโครงสร้างมาตรฐาน
-    const parsedRows = parseChatconePayload(payload, rawContent);
+    // แปลงข้อมูลจาก Chatcone ให้อยู่ในโครงสร้างมาตรฐาน (พร้อมส่ง context e เพื่อตรวจจับบัญชี)
+    const parsedRows = parseChatconePayload(payload, rawContent, e);
 
     if (parsedRows && parsedRows.length > 0) {
       // ดึงข้อมูลแถวสุดท้ายเพื่อเพิ่มข้อมูล
@@ -159,6 +305,26 @@ function doPost(e) {
       if (parsedRows[0].length >= 16) {
         sheet.getRange(lastRow + 1, 16, parsedRows.length, 1).setNumberFormat("#,##0.00"); // Grand Total เป็นตัวเลขเงิน
       }
+
+      // นับแยกบัญชีเพื่อบันทึกประวัติลงใน Sync_Logs
+      let countDist = 0;
+      let countOff = 0;
+      for (let i = 0; i < parsedRows.length; i++) {
+        if (parsedRows[i][1] === "SevenfiveOfficial") {
+          countOff++;
+        } else {
+          countDist++;
+        }
+      }
+
+      recordSyncLog(
+        (payload && payload.action === "sync") ? "Batch Sync" : "Webhook Ingestion",
+        "✅ สำเร็จ",
+        parsedRows.length,
+        countDist,
+        countOff,
+        "บันทึกข้อความใหม่ลงชีต " + parsedRows.length + " แถว"
+      );
     }
 
     return createJsonResponse({
@@ -223,62 +389,107 @@ function extractPdfQuotationData(fileUrl, fileName) {
       return result;
     }
     const blob = response.getBlob();
+    const contentType = (blob.getContentType() || "").toLowerCase();
+    if (!contentType.includes("pdf") && !contentType.includes("image") && !fileUrl.toLowerCase().includes(".pdf")) {
+      return result;
+    }
 
-    // 3. ใช้ Google Drive REST API แปลง PDF เป็น Google Doc ชั่วคราวด้วย OCR
-    const metadata = {
-      title: "temp_ocr_" + new Date().getTime(),
-      mimeType: "application/vnd.google-apps.document"
-    };
-
-    const boundary = "-------chatconeOcrBoundary" + new Date().getTime();
-    const delimiter = "\r\n--" + boundary + "\r\n";
-    const closeDelimiter = "\r\n--" + boundary + "--";
-
-    const requestBody =
-      delimiter +
-      'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
-      JSON.stringify(metadata) +
-      delimiter +
-      'Content-Type: ' + (blob.getContentType() || 'application/pdf') + '\r\n' +
-      'Content-Transfer-Encoding: base64\r\n\r\n' +
-      Utilities.base64Encode(blob.getBytes()) +
-      closeDelimiter;
-
+    const tempName = "temp_ocr_" + new Date().getTime();
+    let tempFile = null;
     let docId = null;
 
-    // ลองใช้ Drive Advanced Service ก่อนหากเปิดใช้งานไว้
-    if (typeof Drive !== "undefined" && Drive.Files && Drive.Files.insert) {
+    // 3. ใช้ Google Drive Advanced Service (รองรับทั้ง Drive API v2 และ v3)
+    if (typeof Drive !== "undefined" && Drive.Files) {
       try {
-        const fileObj = Drive.Files.insert(metadata, blob, { ocr: true, ocrLanguage: "th" });
-        if (fileObj && fileObj.id) {
-          docId = fileObj.id;
+        blob.setContentType("application/pdf");
+        tempFile = DriveApp.createFile(blob);
+        const tempFileId = tempFile.getId();
+
+        let docFile = null;
+        if (typeof Drive.Files.copy === "function") {
+          // Drive API v3 / v2: copy file with OCR conversion
+          docFile = Drive.Files.copy(
+            {
+              name: tempName,
+              title: tempName,
+              mimeType: "application/vnd.google-apps.document"
+            },
+            tempFileId,
+            { ocr: true, ocrLanguage: "th" }
+          );
+        } else if (typeof Drive.Files.create === "function") {
+          docFile = Drive.Files.create(
+            {
+              name: tempName,
+              title: tempName,
+              mimeType: "application/vnd.google-apps.document"
+            },
+            blob,
+            { ocr: true, ocrLanguage: "th" }
+          );
+        } else if (typeof Drive.Files.insert === "function") {
+          docFile = Drive.Files.insert(
+            {
+              title: tempName,
+              mimeType: "application/vnd.google-apps.document"
+            },
+            blob,
+            { ocr: true, ocrLanguage: "th" }
+          );
+        }
+
+        if (docFile && docFile.id) {
+          docId = docFile.id;
         }
       } catch (driveErr) {
-        console.warn("Drive.Files.insert fallback:", driveErr);
+        // หาก Drive API มีปัญหา จะลองต่อด้วย REST API
+      } finally {
+        if (tempFile) {
+          try { tempFile.setTrashed(true); } catch (e) {}
+        }
       }
     }
 
-    // หากยังไม่ได้ docId ให้ใช้ REST API
+    // 4. หากยังไม่ได้ docId ให้ลองใช้ REST API
     if (!docId) {
-      const uploadRes = UrlFetchApp.fetch(
-        "https://www.googleapis.com/upload/drive/v2/files?uploadType=multipart&ocr=true&ocrLanguage=th",
-        {
-          method: "post",
-          contentType: "multipart/related; boundary=" + boundary,
-          headers: {
-            Authorization: "Bearer " + ScriptApp.getOAuthToken()
-          },
-          payload: requestBody,
-          muteHttpExceptions: true
-        }
-      );
+      try {
+        const restMetadata = {
+          title: tempName,
+          name: tempName
+        };
 
-      if (uploadRes.getResponseCode() === 200) {
-        const fileInfo = JSON.parse(uploadRes.getContentText());
-        docId = fileInfo.id;
-      } else {
-        console.error("OCR API error:", uploadRes.getResponseCode(), uploadRes.getContentText());
-      }
+        const boundary = "-------chatconeOcrBoundary" + new Date().getTime();
+        const delimiter = "\r\n--" + boundary + "\r\n";
+        const closeDelimiter = "\r\n--" + boundary + "--";
+
+        const requestBody =
+          delimiter +
+          'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+          JSON.stringify(restMetadata) +
+          delimiter +
+          'Content-Type: application/pdf\r\n' +
+          'Content-Transfer-Encoding: base64\r\n\r\n' +
+          Utilities.base64Encode(blob.getBytes()) +
+          closeDelimiter;
+
+        const uploadRes = UrlFetchApp.fetch(
+          "https://www.googleapis.com/upload/drive/v2/files?uploadType=multipart&ocr=true&ocrLanguage=th",
+          {
+            method: "post",
+            contentType: "multipart/related; boundary=" + boundary,
+            headers: {
+              Authorization: "Bearer " + ScriptApp.getOAuthToken()
+            },
+            payload: requestBody,
+            muteHttpExceptions: true
+          }
+        );
+
+        if (uploadRes.getResponseCode() === 200) {
+          const fileInfo = JSON.parse(uploadRes.getContentText());
+          docId = fileInfo.id;
+        }
+      } catch (restErr) {}
     }
 
     if (docId) {
@@ -329,7 +540,7 @@ function extractPdfQuotationData(fileUrl, fileName) {
 /**
  * ฟังก์ชันแปลง Payload จาก Chatcone ให้อยู่ในโครงสร้าง Column ของ Google Sheets (15 Columns)
  */
-function parseChatconePayload(payload, rawContent) {
+function parseChatconePayload(payload, rawContent, e) {
   const rows = [];
   const nowStr = Utilities.formatDate(new Date(), TIMEZONE, DATE_FORMAT);
 
@@ -358,8 +569,8 @@ function parseChatconePayload(payload, rawContent) {
       continue;
     }
 
-    // 2. Account (ชื่อบัญชี / ร้านค้า เช่น Sevenfive Distributor, SevenfiveOfficial)
-    const account = item.account || item.account_name || item.company_name || item.company || (item.channel && item.channel.account) || "Sevenfive Distributor";
+    // 2. Account (ตรวจจับบัญชีอัตโนมัติจาก Company ID, Channel ID, URL Param, หรือข้อมูลใน Payload)
+    const account = resolveAccountName(item, payload, e, "Sevenfive Distributor");
 
     // 3. Channel / Platform (LINE, Facebook, IG, Webchat)
     const channel = item.channel || item.platform || item.source || (item.channel_type ? item.channel_type : "Chatcone");
@@ -380,14 +591,46 @@ function parseChatconePayload(payload, rawContent) {
     // 6. User ID / Customer ID
     const userId = item.customer_id || item.user_id || item.sender_id || item.uid || (item.sender ? (item.sender.id || item.sender.uid) : "") || "-";
 
-    // 7. Message Type (text, image, sticker, file, audio, video)
+    // 7. Message Type & File Extraction (รองรับ Text, Image, Sticker, File, และ Flex Message ที่แอดมินส่งใบเสนอราคา)
     let messageType = item.message_type || item.type || "text";
-    if (item.message && item.message.type) {
-      messageType = item.message.type;
+    let attachedFileName = item.file_name || item.fileName || (item.message && (item.message.file_name || item.message.fileName)) || "";
+    let mediaUrl = item.file_path || item.filePath || item.media_url || item.image_url || item.file_url || item.file || item.download_url || item.url || "";
+
+    // ตรวจสอบ messages_sent และ Flex Message (LINE OA Agent files เช่น ใบเสนอราคา QT)
+    const sentList = Array.isArray(item.messages_sent) ? item.messages_sent : (item.message ? [item.message] : []);
+    for (let sIdx = 0; sIdx < sentList.length; sIdx++) {
+      const sObj = sentList[sIdx];
+      if (!sObj) continue;
+      if (sObj.fileName || sObj.file_name) attachedFileName = attachedFileName || sObj.fileName || sObj.file_name;
+      if (sObj.file_path || sObj.filePath || sObj.file_url || sObj.url || sObj.file) {
+        mediaUrl = mediaUrl || sObj.file_path || sObj.filePath || sObj.file_url || sObj.url || sObj.file;
+      }
+      if (sObj.type === "flex" || sObj.contents) {
+        const flexStr = typeof sObj.contents === "string" ? sObj.contents : JSON.stringify(sObj.contents || sObj);
+        const nameMatch = flexStr.match(/[\"']([^\"']*?\.pdf)[\"']/i) || flexStr.match(/(QT[\w-]+\.[^\"\s]+)/i);
+        if (nameMatch && !attachedFileName) attachedFileName = nameMatch[1];
+        const pdfUriMatch = flexStr.match(/https:\/\/[^\"\s]+?\.pdf/i);
+        const actionUriMatch = flexStr.match(/\"uri\"\s*:\s*\"(https:\/\/[^\"]+)\"/i);
+        if (pdfUriMatch && !mediaUrl) {
+          mediaUrl = pdfUriMatch[0].replace(/[\\\"']/g, "");
+        } else if (actionUriMatch && !mediaUrl) {
+          mediaUrl = actionUriMatch[1].replace(/[\\\"']/g, "");
+        }
+      }
     }
 
-    // ชื่อไฟล์แนบ (ถ้ามี)
-    const attachedFileName = item.file_name || item.fileName || (item.message && (item.message.file_name || item.message.fileName)) || "";
+    if (item.type === "flex" || (item.message && item.message.type === "flex")) {
+      const flexStr = JSON.stringify(item.messages_sent || item.message || item);
+      const nameMatch = flexStr.match(/[\"']([^\"']*?\.pdf)[\"']/i) || flexStr.match(/(QT[\w-]+\.[^\"\s]+)/i);
+      if (nameMatch && !attachedFileName) attachedFileName = nameMatch[1];
+      const pdfUriMatch = flexStr.match(/https:\/\/[^\"\s]+?\.pdf/i);
+      const actionUriMatch = flexStr.match(/\"uri\"\s*:\s*\"(https:\/\/[^\"]+)\"/i);
+      if (pdfUriMatch && !mediaUrl) {
+        mediaUrl = pdfUriMatch[0].replace(/[\\\"']/g, "");
+      } else if (actionUriMatch && !mediaUrl) {
+        mediaUrl = actionUriMatch[1].replace(/[\\\"']/g, "");
+      }
+    }
 
     // 8. Message Content (ข้อความ)
     let messageContent = "";
@@ -397,6 +640,8 @@ function parseChatconePayload(payload, rawContent) {
       messageContent = item.message.text;
     } else if (item.text) {
       messageContent = item.text;
+    } else if (attachedFileName) {
+      messageContent = attachedFileName;
     } else if (item.content) {
       messageContent = typeof item.content === "string" ? item.content : JSON.stringify(item.content);
     } else if (messageType === "image") {
@@ -407,6 +652,14 @@ function parseChatconePayload(payload, rawContent) {
       messageContent = attachedFileName || item.title || "[Attachment File]";
     } else {
       messageContent = JSON.stringify(item.message || item);
+    }
+
+    // หากพบว่าเป็นไฟล์แนบหรือ PDF
+    if (attachedFileName && (attachedFileName.toLowerCase().endsWith(".pdf") || /QT\d+/i.test(attachedFileName))) {
+      messageType = "file";
+      if (!messageContent || messageContent === "Send Files" || messageContent === "Send File" || messageContent.includes("flex")) {
+        messageContent = attachedFileName;
+      }
     }
 
     // 9. Response Time (เวลาที่แอดมินใช้ตอบ)
@@ -436,11 +689,12 @@ function parseChatconePayload(payload, rawContent) {
     }
 
     // 11. Media / Attachment URL (ลิงก์รูป/ไฟล์)
-    let mediaUrl = "";
-    if (item.media_url || item.image_url || item.file_url || item.file || item.download_url || item.url) {
-      mediaUrl = item.media_url || item.image_url || item.file_url || item.file || item.download_url || item.url;
-    } else if (item.message && (item.message.url || item.message.image_url || item.message.file_url || item.message.file || item.message.download_url || item.message.media_url)) {
-      mediaUrl = item.message.url || item.message.image_url || item.message.file_url || item.message.file || item.message.download_url || item.message.media_url;
+    if (!mediaUrl) {
+      if (item.media_url || item.image_url || item.file_url || item.file || item.download_url || item.url) {
+        mediaUrl = item.media_url || item.image_url || item.file_url || item.file || item.download_url || item.url;
+      } else if (item.message && (item.message.url || item.message.image_url || item.message.file_url || item.message.file || item.message.download_url || item.message.media_url)) {
+        mediaUrl = item.message.url || item.message.image_url || item.message.file_url || item.message.file || item.message.download_url || item.message.media_url;
+      }
     }
 
     // 12. Conversation ID / Room ID / Session ID
@@ -449,8 +703,8 @@ function parseChatconePayload(payload, rawContent) {
     // 13. Message ID (เพื่อป้องกันการซ้ำ)
     const messageId = item.message_id || item.msg_id || item.id || "-";
 
-    // 14. Raw JSON (เก็บเป็น String ไม่เกิน 5000 ตัวอักษรเพื่อไม่ให้ตารางบวม)
-    const rawJsonStr = (typeof rawContent === "string" ? rawContent : JSON.stringify(item)).substring(0, 5000);
+    // 14. Raw JSON ของข้อความนี้โดยเฉพาะ (เพื่อให้แต่ละแถวมีข้อมูลของตัวเอง ไม่ปนกับแถวอื่นในชุด)
+    const rawJsonStr = JSON.stringify(item).substring(0, 5000);
 
     // 15 & 16. Quotation No. และ Grand Total (ยอดรวมใบเสนอราคา)
     let quotationNo = item.quotation_no || item.quotationNo || item.doc_no || "";
@@ -462,15 +716,17 @@ function parseChatconePayload(payload, rawContent) {
     const isPdf = messageType === "file" || messageType === "pdf" ||
       (attachedFileName && attachedFileName.toLowerCase().endsWith(".pdf")) ||
       (messageContent && messageContent.toLowerCase().endsWith(".pdf")) ||
-      (mediaUrl && mediaUrl.toLowerCase().includes(".pdf"));
+      (mediaUrl && mediaUrl.toLowerCase().includes(".pdf")) ||
+      /QT\d+/i.test(attachedFileName || messageContent);
 
     if (isPdf) {
-      if (messageType === "text" || !messageType) {
-        messageType = "file";
+      messageType = "file";
+      if (!messageContent || messageContent === "Send Files" || messageContent === "Send File" || messageContent.includes("flex")) {
+        messageContent = attachedFileName || "Quotation PDF";
       }
-      // สกัดเลขที่เอกสารเบื้องต้นจากชื่อไฟล์หรือข้อความ
+      // สกัดเลขที่เอกสารเบื้องต้นจากชื่อไฟล์หรือข้อความหรือ URL
       if (!quotationNo) {
-        const qMatch = (attachedFileName || messageContent || "").match(/(?:QT|QUO|INV)[\w-]+/i);
+        const qMatch = (attachedFileName || messageContent || mediaUrl).match(/(?:QT|QUO|INV)[\w-]+/i);
         if (qMatch) {
           quotationNo = qMatch[0].toUpperCase();
         }
@@ -595,12 +851,116 @@ function initializeSheet(ss) {
 }
 
 /**
+ * 📝 สร้างหรือเตรียมชีตบันทึกประวัติการ Sync (Sync_Logs)
+ */
+function initializeLogSheet(ss) {
+  let logSheet = ss.getSheetByName(LOG_SHEET_NAME);
+  if (!logSheet) {
+    logSheet = ss.insertSheet(LOG_SHEET_NAME);
+  }
+
+  const headers = [
+    "Timestamp (วัน-เวลา)",
+    "Action (การดำเนินการ)",
+    "Status (สถานะ)",
+    "Total Messages (ข้อความรวม)",
+    "Sevenfive Distributor",
+    "SevenfiveOfficial",
+    "Filter Range (ช่วงเวลา)",
+    "Details (รายละเอียด)"
+  ];
+
+  if (logSheet.getLastRow() < 1) {
+    logSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+
+    const headerRange = logSheet.getRange(1, 1, 1, headers.length);
+    headerRange.setBackground("#0f172a"); // Slate 900
+    headerRange.setFontColor("#ffffff");
+    headerRange.setFontWeight("bold");
+    headerRange.setFontFamily("Sarabun");
+    headerRange.setFontSize(10);
+    headerRange.setHorizontalAlignment("center");
+    headerRange.setVerticalAlignment("middle");
+    logSheet.setRowHeight(1, 38);
+    logSheet.setFrozenRows(1);
+
+    logSheet.setColumnWidth(1, 170); // Timestamp
+    logSheet.setColumnWidth(2, 190); // Action
+    logSheet.setColumnWidth(3, 110); // Status
+    logSheet.setColumnWidth(4, 150); // Total Messages
+    logSheet.setColumnWidth(5, 170); // Sevenfive Distributor
+    logSheet.setColumnWidth(6, 170); // SevenfiveOfficial
+    logSheet.setColumnWidth(7, 200); // Filter Range
+    logSheet.setColumnWidth(8, 280); // Details
+
+    logSheet.getRange("A:C").setHorizontalAlignment("center");
+    logSheet.getRange("D:F").setHorizontalAlignment("right");
+    logSheet.getRange("G:G").setHorizontalAlignment("center");
+  }
+
+  return logSheet;
+}
+
+/**
+ * 📝 บันทึกประวัติการ Sync ลงในชีต Sync_Logs
+ */
+function recordSyncLog(action, status, totalCount, distributorCount, officialCount, details) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const logSheet = initializeLogSheet(ss);
+    const nowStr = Utilities.formatDate(new Date(), TIMEZONE, DATE_FORMAT);
+    const filterInfo = FILTER_LAST_DAYS > 0 ? (FILTER_LAST_DAYS + " วันล่าสุด") : "ไม่จำกัดวัน";
+
+    logSheet.appendRow([
+      nowStr,
+      action || "Sync Messages",
+      status || "✅ สำเร็จ",
+      Number(totalCount) || 0,
+      Number(distributorCount) || 0,
+      Number(officialCount) || 0,
+      filterInfo,
+      details || ""
+    ]);
+
+    const lastRow = logSheet.getLastRow();
+    logSheet.getRange(lastRow, 1).setNumberFormat("@");
+    logSheet.getRange(lastRow, 4, 1, 3).setNumberFormat("#,##0");
+  } catch (err) {
+    Logger.log("ไม่สามารถบันทึก Log Sheet ได้: " + err);
+  }
+}
+
+/**
+ * 📋 ฟังก์ชันเปิดไปที่ชีต Sync_Logs ทันที
+ */
+function openSyncLogs() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const logSheet = initializeLogSheet(ss);
+  ss.setActiveSheet(logSheet);
+}
+
+/**
+ * 🌟 เพิ่มเมนู Chatcone Sync บนแถบเมนู Google Sheets อัตโนมัติเมื่อเปิดไฟล์
+ */
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu("🚀 Chatcone Sync")
+    .addItem("🔄 จัดระเบียบตาราง & อัปเดตบัญชีอัตโนมัติ (Fix & Auto-Detect)", "fixAndCleanColumns")
+    .addItem("📋 ดูประวัติการ Sync (Open Sync Logs)", "openSyncLogs")
+    .addSeparator()
+    .addItem("🧪 ส่งข้อมูลจำลองทดสอบทั้ง 2 บัญชี (Mock Webhook)", "testMockChatconeWebhook")
+    .addItem("⚙️ ตั้งค่าหัวตารางใหม่ (Setup Sheet)", "setupSheet")
+    .addToUi();
+}
+
+/**
  * ฟังก์ชันสำหรับทดสอบสร้างตารางด้วยตัวเอง (Manual Run)
  */
 function setupSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   initializeSheet(ss);
-  SpreadsheetApp.getUi().alert("สร้างตาราง Chat_Logs (16 คอลัมน์ รองรับ 2 บัญชี) และจัดรูปแบบเรียบร้อยแล้ว!");
+  initializeLogSheet(ss);
+  Logger.log("สร้างตาราง Chat_Logs (16 คอลัมน์) และ Sync_Logs เรียบร้อยแล้ว");
 }
 
 /**
@@ -630,12 +990,12 @@ function fixAndCleanColumns() {
     const row = allValues[i];
     const timestamp = row[0];
 
-    // กรองเฉพาะข้อความย้อนหลัง 1 วัน รวมวันนี้ = 2 วันล่าสุด
+    // กรองเฉพาะข้อความ 2 วันล่าสุด (เมื่อวานและวันนี้)
     if (FILTER_LAST_DAYS > 0 && !isWithinSyncWindow(timestamp)) {
       continue;
     }
 
-    let account = "Sevenfive Distributor";
+    let account = "";
     let channel = "";
     let senderType = "";
     let senderName = "";
@@ -651,9 +1011,16 @@ function fixAndCleanColumns() {
     let quotationNo = "";
     let grandTotal = "";
 
-    if (lastCol >= 16) {
+    // ตรวจสอบว่าแถวนี้เป็นแถวจากโครงสร้างเก่า (15 คอลัมน์) ที่ยังไม่ได้เลื่อนคอลัมน์ Account หรือไม่
+    const isShiftedFromOld = (
+      row[2] === "Customer" || row[2] === "Agent" || row[2] === "Bot" || row[2] === "System" ||
+      row[1] === "Chatcone" ||
+      (row[1] !== "Sevenfive Distributor" && row[1] !== "SevenfiveOfficial" && (row[1] === "LINE OA" || row[1] === "Facebook Messenger" || row[1] === "Webchat"))
+    );
+
+    if (lastCol >= 16 && !isShiftedFromOld) {
       // ตารางเวอร์ชัน 16 คอลัมน์อยู่แล้ว
-      account = row[1] || "Sevenfive Distributor";
+      account = row[1] || "";
       channel = row[2] || "";
       senderType = row[3] || "";
       senderName = row[4] || "";
@@ -671,7 +1038,7 @@ function fixAndCleanColumns() {
       quotationNo = row[14] || "";
       grandTotal = row[15] !== "" ? Number(row[15]) : "";
     } else {
-      // ตารางเวอร์ชันเก่า (11, 13 หรือ 15 คอลัมน์ที่ยังไม่มีคอลัมน์ Account)
+      // ตารางเวอร์ชันเก่า (11, 13 หรือ 15 คอลัมน์ หรือแถวที่เลื่อนเพราะไม่มีคอลัมน์ Account)
       channel = row[1] || "";
       senderType = row[2] || "";
       senderName = row[3] || "";
@@ -724,7 +1091,39 @@ function fixAndCleanColumns() {
       }
     }
 
-    // 1. ดึงข้อมูลจาก Raw JSON Data หากมีระบุไว้
+    // 1. ดึงข้อมูลจาก Raw JSON Data และตัวบ่งชี้ต่างๆ เพื่อระบุบัญชีที่แท้จริง
+    let detectedAccount = "";
+
+    // ก) ตรวจสอบจาก Conversation ID / Customer ID ใน KNOWN_ACCOUNTS
+    const convKey = String(conversationId || "").toLowerCase();
+    const custKey = String(customerId || "").toLowerCase();
+    if (KNOWN_ACCOUNTS[convKey]) {
+      detectedAccount = KNOWN_ACCOUNTS[convKey];
+    } else if (KNOWN_ACCOUNTS[custKey]) {
+      detectedAccount = KNOWN_ACCOUNTS[custKey];
+    }
+
+    // ข) ตรวจสอบจากชื่อผู้ส่ง/ลูกค้า
+    if (!detectedAccount) {
+      const sName = String(senderName || "").toLowerCase().trim();
+      for (let n = 0; n < OFFICIAL_KNOWN_NAMES.length; n++) {
+        if (sName.includes(OFFICIAL_KNOWN_NAMES[n])) {
+          detectedAccount = "SevenfiveOfficial";
+          break;
+        }
+      }
+    }
+
+    // ค) ตรวจสอบจาก Raw JSON ด้วย Regex (ไม่ต้องพึ่งพา JSON.parse ที่อาจ error จากความยาวข้อความ)
+    if (!detectedAccount && rawJson && typeof rawJson === "string") {
+      if (/SevenfiveOfficial|68819f3edd184b81dc6ac35e|6881c67ddd184b54a06b025c|68819f3edd184bf5276ac35f|g6zvti0a/i.test(rawJson)) {
+        detectedAccount = "SevenfiveOfficial";
+      } else if (/68819f44dd184b85876ac383|6881b04f2d07422b089ec4c8|68819f44dd184bb7f86ac384|68844b588be8b73f96d987f3|x0wteloe/i.test(rawJson)) {
+        detectedAccount = "Sevenfive Distributor";
+      }
+    }
+
+    // ง) พยายามแกะ JSON หากทำได้ เพื่อดึงใบเสนอราคาและยอดเงิน
     if (rawJson && typeof rawJson === "string") {
       try {
         const parsedRaw = JSON.parse(rawJson);
@@ -738,8 +1137,9 @@ function fixAndCleanColumns() {
         }
 
         if (itemData) {
-          if (itemData.account || itemData.account_name || itemData.company_name || itemData.company) {
-            account = itemData.account || itemData.account_name || itemData.company_name || itemData.company;
+          if (!detectedAccount) {
+            const autoDetected = resolveAccountName(itemData, parsedRaw, null, "");
+            if (autoDetected) detectedAccount = autoDetected;
           }
           if (!quotationNo && (itemData.quotation_no || itemData.quotationNo || itemData.doc_no)) {
             quotationNo = itemData.quotation_no || itemData.quotationNo || itemData.doc_no;
@@ -752,15 +1152,56 @@ function fixAndCleanColumns() {
       } catch (jsonErr) {}
     }
 
-    // 2. ดึง Quotation No. จากชื่อไฟล์หากยังไม่มี
+    // กำหนดชื่อบัญชี: หากพบชัดเจนให้ใช้ detectedAccount ทันที (แก้ปัญหาแถวที่เคยถูกใส่ผิดเป็น Distributor)
+    if (detectedAccount) {
+      account = detectedAccount;
+    } else if (!account || account === "Chatcone") {
+      account = "Sevenfive Distributor";
+    }
+
+    // 2. ตรวจสอบไฟล์แนบ / Flex Message / ใบเสนอราคา จาก Raw JSON หรือข้อความเดิม
+    if (rawJson && typeof rawJson === "string") {
+      // ค้นหาชื่อไฟล์ PDF จาก rawJson (เช่น QT0926-00849.ฮอตพอตแมน ประเวศ.pdf)
+      const pdfNameMatch = rawJson.match(/[\"']([^\"']*?\.pdf)[\"']/i) || rawJson.match(/(QT[\w-]+\.[^\"\s]+)/i);
+      if (pdfNameMatch) {
+        const foundPdf = pdfNameMatch[1];
+        if (!messageContent || messageContent === "Send Files" || messageContent === "Send File" || messageContent.includes("flex") || messageContent === "text") {
+          messageContent = foundPdf;
+        }
+        messageType = "file";
+      }
+
+      // ค้นหา URL ดาวน์โหลด S3 / Chatcone จาก rawJson (เน้นไฟล์ .pdf หรือ action uri)
+      if (!mediaUrl) {
+        const pdfUrlMatch = rawJson.match(/https:\/\/[^\"\s]+?\.pdf/i);
+        const actionUriMatch = rawJson.match(/\"uri\"\s*:\s*\"(https:\/\/[^\"]+)\"/i);
+        if (pdfUrlMatch) {
+          mediaUrl = pdfUrlMatch[0].replace(/[\\\"']/g, "");
+        } else if (actionUriMatch) {
+          mediaUrl = actionUriMatch[1].replace(/[\\\"']/g, "");
+        }
+      }
+    }
+
+    // 3. ตรวจสอบว่าเป็นไฟล์ PDF หรือไม่
+    const isRowPdf = messageType === "file" || messageType === "pdf" ||
+      (messageContent && messageContent.toLowerCase().endsWith(".pdf")) ||
+      (mediaUrl && mediaUrl.toLowerCase().includes(".pdf")) ||
+      /QT\d+/i.test(messageContent || quotationNo);
+
+    if (isRowPdf) {
+      messageType = "file";
+    }
+
+    // 4. ดึง Quotation No. จากชื่อไฟล์ ข้อความ หรือ mediaUrl
     if (!quotationNo) {
-      const qm = (messageContent || mediaUrl).match(/(?:QT|QUO|INV)[\w-]+/i);
+      const qm = (messageContent || mediaUrl || rawJson || "").match(/(?:QT|QUO|INV)[\w-]+/i);
       if (qm) quotationNo = qm[0].toUpperCase();
     }
 
-    // 3. หากยังไม่มียอดเงิน และมี URL ไฟล์ PDF จริง ให้ลองทำ OCR ดึงยอดเงิน
+    // 5. หากยังไม่มียอดเงิน และมี URL ไฟล์ PDF จริง ให้รัน OCR ดึงยอดเงิน
     if (grandTotal === "" && mediaUrl && typeof mediaUrl === "string" && mediaUrl.startsWith("http")) {
-      const isPdfUrl = mediaUrl.toLowerCase().includes(".pdf") || messageContent.toLowerCase().endsWith(".pdf") || messageType === "file";
+      const isPdfUrl = mediaUrl.toLowerCase().includes(".pdf") || (messageContent && messageContent.toLowerCase().endsWith(".pdf")) || messageType === "file";
       if (isPdfUrl) {
         const ocrData = extractPdfQuotationData(mediaUrl, messageContent);
         if (!quotationNo && ocrData.quotationNo) quotationNo = ocrData.quotationNo;
@@ -792,14 +1233,34 @@ function fixAndCleanColumns() {
   sheet.clear();
   initializeSheet(ss);
 
+  let countDistributor = 0;
+  let countOfficial = 0;
+
   if (newRows.length > 0) {
     sheet.getRange(2, 1, newRows.length, newRows[0].length).setValues(newRows);
     sheet.getRange(2, 1, newRows.length, 1).setNumberFormat("@");
     sheet.getRange(2, 16, newRows.length, 1).setNumberFormat("#,##0.00");
+
+    for (let r = 0; r < newRows.length; r++) {
+      if (newRows[r][1] === "SevenfiveOfficial") {
+        countOfficial++;
+      } else {
+        countDistributor++;
+      }
+    }
   }
 
-  const startThai = Utilities.formatDate(getSyncStartDate(), TIMEZONE, "yyyy-MM-dd HH:mm");
-  SpreadsheetApp.getUi().alert("จัดระเบียบตาราง (16 คอลัมน์ รองรับ 2 บัญชี) และกรองเฉพาะ 2 วันล่าสุด (ตั้งแต่เมื่อวาน " + startThai + " เป็นต้นมา) เรียบร้อยแล้ว " + newRows.length + " แถว!");
+  Logger.log("✅ จัดระเบียบตาราง (16 คอลัมน์) เรียบร้อยแล้ว " + newRows.length + " แถว (Distributor: " + countDistributor + ", Official: " + countOfficial + ")");
+
+  // 📝 บันทึกประวัติการ Sync ลงในชีต Sync_Logs
+  recordSyncLog(
+    "จัดระเบียบตาราง & อัปเดตบัญชี",
+    "✅ สำเร็จ",
+    newRows.length,
+    countDistributor,
+    countOfficial,
+    "จัดระเบียบตาราง 16 คอลัมน์ กรอง 2 วันล่าสุด"
+  );
 }
 
 /**
@@ -810,7 +1271,8 @@ function testMockChatconeWebhook() {
     events: [
       {
         timestamp: new Date().toISOString(),
-        account: "Sevenfive Distributor",
+        company_id: "68819f44dd184b85876ac383", // Sevenfive Distributor
+        channel_id: "6881b04f2d07422b089ec4c8", // LINE OA
         channel: "LINE OA",
         sender_type: "Customer",
         sender_name: "สมชาย ใจดี",
@@ -824,7 +1286,8 @@ function testMockChatconeWebhook() {
       },
       {
         timestamp: new Date().toISOString(),
-        account: "Sevenfive Distributor",
+        company_id: "68819f44dd184b85876ac383", // Sevenfive Distributor
+        channel_id: "6881b04f2d07422b089ec4c8", // LINE OA
         channel: "LINE OA",
         sender_type: "Agent",
         sender_name: "LYN NIRADA",
@@ -844,19 +1307,35 @@ function testMockChatconeWebhook() {
       },
       {
         timestamp: new Date().toISOString(),
-        account: "SevenfiveOfficial",
+        company_id: "68819f3edd184b81dc6ac35e", // SevenfiveOfficial (Auto-Detect!)
+        channel_id: "6881c67ddd184b54a06b025c", // Facebook Messenger
         channel: "Facebook Messenger",
         sender_type: "Customer",
-        sender_name: "John Doe",
+        sender_name: "John Doe (SevenfiveOfficial FB)",
         customer_id: "FB_987654321",
         message_type: "image",
         media_url: "https://example.com/slip_sample.jpg",
         message: {
           type: "image",
-          text: "ส่งสลิปโอนเงินเรียบร้อยแล้วครับ"
+          text: "ส่งสลิปโอนเงินเรียบร้อยแล้วครับ (จาก SevenfiveOfficial)"
         },
         conversation_id: "conv_fb_112233",
         message_id: "msg_003"
+      },
+      {
+        timestamp: new Date().toISOString(),
+        company_id: "68819f3edd184b81dc6ac35e", // SevenfiveOfficial (Auto-Detect!)
+        channel_id: "68819f3edd184bf5276ac35f", // LINE OA
+        channel: "LINE OA",
+        sender_type: "Customer",
+        sender_name: "วิภาวัลย์ (SevenfiveOfficial LINE)",
+        customer_id: "LINE_OFFICIAL_8877",
+        message_type: "text",
+        message: {
+          text: "สอบถามสินค้าของ SevenfiveOfficial ค่ะ"
+        },
+        conversation_id: "conv_line_official_112",
+        message_id: "msg_004"
       }
     ]
   };

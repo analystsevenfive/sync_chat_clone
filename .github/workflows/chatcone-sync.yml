@@ -1,0 +1,32 @@
+name: 🔄 Chatcone 24/7 Cloud Sync
+
+on:
+  schedule:
+    # รันอัตโนมัติทุก 1 ชั่วโมงบน Cloud ตลอด 24 ชม. (ไม่ต้องเปิดคอมพิวเตอร์)
+    - cron: '0 * * * *'
+  workflow_dispatch: # อนุญาตให้กดปุ่ม "Run workflow" สั่งรันได้ทันทีจากหน้าเว็บ GitHub
+
+jobs:
+  sync-to-sheets:
+    name: Sync Messages to Google Sheets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache-dependency-path: package.json
+
+      - name: 🚀 Run Sync Script
+        env:
+          GOOGLE_WEBHOOK_URL: ${{ secrets.GOOGLE_WEBHOOK_URL }}
+          CHATCONE_TOKEN: ${{ secrets.CHATCONE_TOKEN }}
+          CHATCONE_AGENT_ID: ${{ secrets.CHATCONE_AGENT_ID }}
+        run: |
+          echo "🚀 เริ่มต้นการซิงค์ข้อมูลจาก Chatcone เข้าสู่ Google Sheets..."
+          node sync-now.js
