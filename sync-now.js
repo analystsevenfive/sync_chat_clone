@@ -1,9 +1,10 @@
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const { fetchChatconeToken, getOrRefreshToken, isTokenValid, getCachedToken } = require('./auth-helper');
 
 const GOOGLE_WEBHOOK_URL = process.env.GOOGLE_WEBHOOK_URL || 'https://script.google.com/macros/s/AKfycbzH7Ip9zBoa58KgEGEjhwEK6rKfPezsiTUVguYPDVnF27RONxOGFRWK2zeExou6KyYFOg/exec';
-const TOKEN = process.env.CHATCONE_TOKEN || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiNjg4MWE1M2VjYjM3ODgwMGFiMGNjNzRkIiwiaWF0IjoxNzkwMDg4NzkxLCJleHAiOjE3OTAxNzUxOTF9._ouiRgvu9tG6wZ9wPRgCZTldgyPdreBejtTKtsHeJyU';
+let TOKEN = process.env.CHATCONE_TOKEN || getCachedToken() || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiNjg4MWE1M2VjYjM3ODgwMGFiMGNjNzRkIiwiaWF0IjoxNzkwMjIxMjExLCJleHAiOjE3OTAzMDc2MTF9.3DjEQw1uQa8xS1XGANd1omBmNZXksco2p71Qu3jC_Eg';
 const AGENT_ID = process.env.CHATCONE_AGENT_ID || '6881a53ecb378800ab0cc74d';
 
 // รายชื่อ 2 บัญชีของ Chatcone (Sevenfive Distributor และ SevenfiveOfficial)
@@ -52,7 +53,7 @@ function saveSyncedIds(set) {
   } catch (e) {}
 }
 
-function chatconeRequest(accountConfig, channelId, reqPath, method, body) {
+function executeHttpRequest(accountConfig, channelId, reqPath, method, body, token) {
   return new Promise((resolve, reject) => {
     const postData = body ? JSON.stringify(body) : null;
     const effectiveChannelId = channelId || (accountConfig.channels && accountConfig.channels[0] ? accountConfig.channels[0].id : '');
@@ -63,7 +64,7 @@ function chatconeRequest(accountConfig, channelId, reqPath, method, body) {
       method: method,
       headers: {
         'accept': 'application/json, text/plain, */*',
-        'authorization': `Bearer ${TOKEN}`,
+        'authorization': `Bearer ${token}`,
         'agent_id': AGENT_ID,
         'channel_id': effectiveChannelId,
         'channel_lists': accountConfig.channel_lists,
@@ -72,7 +73,7 @@ function chatconeRequest(accountConfig, channelId, reqPath, method, body) {
         'origin': 'https://portal.chatcone.com',
         'referer': accountConfig.referer,
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36',
-        'cookie': `auth.strategy=local; token=${TOKEN}; i18n_redirected=en`
+        'cookie': `auth.strategy=local; token=${token}; i18n_redirected=en`
       }
     };
     if (postData) {
@@ -102,6 +103,23 @@ function chatconeRequest(accountConfig, channelId, reqPath, method, body) {
     if (postData) req.write(postData);
     req.end();
   });
+}
+
+async function chatconeRequest(accountConfig, channelId, reqPath, method, body, retryOn401 = true) {
+  let res = await executeHttpRequest(accountConfig, channelId, reqPath, method, body, TOKEN);
+
+  // ตรวจจับ 401 Unauthorized และทำการ Auto-Refresh Token อัตโนมัติ
+  if (res.status === 401 && retryOn401) {
+    console.log('\n⚠️ ได้รับ 401 Unauthorized จาก Chatcone! กำลังต่ออายุ Token ใหม่อัตโนมัติ...');
+    try {
+      TOKEN = await fetchChatconeToken();
+      res = await executeHttpRequest(accountConfig, channelId, reqPath, method, body, TOKEN);
+    } catch (err) {
+      console.error('❌ การต่ออายุ Token อัตโนมัติล้มเหลว:', err.message);
+    }
+  }
+
+  return res;
 }
 
 async function postToGoogleSheets(events, action) {
@@ -193,6 +211,16 @@ function isValidQuotationNo(val) {
 }
 
 async function run() {
+  // ตรวจสอบและต่ออายุ Token อัตโนมัติหากหมดอายุ
+  if (!isTokenValid(TOKEN)) {
+    console.log('🔑 ตรวจพบว่า Chatcone Token หมดอายุ กำลังต่ออายุใหม่อัตโนมัติ...');
+    try {
+      TOKEN = await getOrRefreshToken();
+    } catch (e) {
+      console.error('❌ ไม่สามารถต่ออายุ Token อัตโนมัติได้:', e.message);
+    }
+  }
+
   const isReset = process.argv.includes('--reset');
   let syncedIds = new Set();
 
@@ -243,8 +271,8 @@ async function run() {
         );
 
         if (followersRes.status === 401) {
-          console.error(`\n❌ Token ของ Chatcone หมดอายุแล้ว (401 Unauthorized)!`);
-          console.error(`👉 กรุณาเปิด portal.chatcone.com > F12 > Network แล้วคัดลอก Bearer Token ใหม่มาวางที่ตัวแปร TOKEN ใน sync-now.js`);
+          console.error(`\n❌ ไม่สามารถเชื่อมต่อ Chatcone ได้ (401 Unauthorized) หลังพยายามต่ออายุ Token อัตโนมัติ`);
+          console.error(`👉 กรุณาตรวจสอบ username/password ใน .env หรือรัน get-token.bat`);
           process.exit(1);
         }
 
