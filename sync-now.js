@@ -173,6 +173,25 @@ function getFollowerLastAct(follower) {
   return follower.updated_at || null;
 }
 
+/**
+ * ฟังก์ชันตรวจสอบและดึงเลขที่ใบเสนอราคา (Quotation No.) ให้ถูกต้องตามรูปแบบ
+ * ป้องกันคำที่ไม่ใช่เลขที่เอกสาร เช่น QTEC, QTDACCBDTCN8A, QUOTATION, INVOICE ฯลฯ
+ * รูปแบบมาตรฐาน Sevenfive เช่น QT0926-01181, QT0826-00767, QT0926-01155
+ */
+function extractQuotationNo(text) {
+  if (!text || typeof text !== 'string') return '';
+  const match = text.match(/(?:QT|QUO|INV)[-_]?(?:\d{3,6}[-_/]\d{2,6}|\d{5,10})(?:[-_]?(?:REV|R)?\d+)?(?![a-zA-Z\d])/i);
+  return match ? match[0].toUpperCase() : '';
+}
+
+/**
+ * ตรวจสอบว่าสตริงเป็นเลขที่ใบเสนอราคาที่ถูกต้องสมบูรณ์หรือไม่
+ */
+function isValidQuotationNo(val) {
+  if (!val || typeof val !== 'string') return false;
+  return /^(?:QT|QUO|INV)[-_]?(?:\d{3,6}[-_/]\d{2,6}|\d{5,10})(?:[-_]?(?:REV|R)?\d+)?$/i.test(val.trim());
+}
+
 async function run() {
   const isReset = process.argv.includes('--reset');
   let syncedIds = new Set();
@@ -401,10 +420,13 @@ async function run() {
               if (!text || text === 'Send Files' || text === 'Send File') {
                 text = fileName || 'Quotation PDF';
               }
-              const qMatch = (fileName || text || mediaUrl).match(/(?:QT|QUO|INV)[\w-]+/i);
-              if (qMatch) {
-                quotationNo = qMatch[0].toUpperCase();
-              }
+              quotationNo = extractQuotationNo(fileName) || extractQuotationNo(text) || extractQuotationNo(mediaUrl);
+            } else {
+              quotationNo = extractQuotationNo(text);
+            }
+
+            if (!isValidQuotationNo(quotationNo)) {
+              quotationNo = '';
             }
 
             let rawTime = m.timestamp;

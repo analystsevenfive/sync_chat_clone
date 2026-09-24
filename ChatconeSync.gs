@@ -272,6 +272,15 @@ function doPost(e) {
       }, 200);
     }
 
+    // หากมีคำสั่งจัดระเบียบตารางและล้างข้อมูลผิดพลาด (Quotation No.)
+    if (payload && (payload.action === "fix_columns" || payload.action === "clean_quotations")) {
+      fixAndCleanColumns();
+      return createJsonResponse({
+        status: "success",
+        message: "Cleaned and reorganized columns successfully"
+      }, 200);
+    }
+
     // หากมีคำสั่งรีเซ็ตชีตเพื่อจัดคอลัมน์ใหม่ทั้งหมด
     if (payload && payload.action === "reset_and_sync") {
       if (sheet) {
@@ -361,6 +370,25 @@ function doGet(e) {
 }
 
 /**
+ * ฟังก์ชันตรวจสอบและดึงเลขที่ใบเสนอราคา (Quotation No.) ให้ถูกต้องตามรูปแบบ
+ * ป้องกันคำที่ไม่ใช่เลขที่เอกสาร เช่น QTEC, QTDACCBDTCN8A, QUOTATION, INVOICE ฯลฯ
+ * รูปแบบมาตรฐาน Sevenfive เช่น QT0926-01181, QT0826-00767, QT0926-01155
+ */
+function extractQuotationNo(text) {
+  if (!text || typeof text !== "string") return "";
+  const match = text.match(/(?:QT|QUO|INV)[-_]?(?:\d{3,6}[-_/]\d{2,6}|\d{5,10})(?:[-_]?(?:REV|R)?\d+)?(?![a-zA-Z\d])/i);
+  return match ? match[0].toUpperCase() : "";
+}
+
+/**
+ * ตรวจสอบว่าสตริงเป็นเลขที่ใบเสนอราคาที่ถูกต้องสมบูรณ์หรือไม่
+ */
+function isValidQuotationNo(val) {
+  if (!val || typeof val !== "string") return false;
+  return /^(?:QT|QUO|INV)[-_]?(?:\d{3,6}[-_/]\d{2,6}|\d{5,10})(?:[-_]?(?:REV|R)?\d+)?$/i.test(val.trim());
+}
+
+/**
  * ฟังก์ชันดึงเลขที่ใบเสนอราคา (Quotation No.) และยอดรวม (Grand Total) จากไฟล์ PDF
  * รองรับทั้งการแปลงข้อความจาก Google Drive OCR และการวิเคราะห์จากชื่อไฟล์/เนื้อหา
  */
@@ -372,10 +400,7 @@ function extractPdfQuotationData(fileUrl, fileName) {
 
   const nameToCheck = fileName || "";
   // 1. ดึงเลขที่เอกสารเบื้องต้นจากชื่อไฟล์ เช่น QT0926-01155.ลัคกี เจแปน.pdf
-  const nameDocMatch = nameToCheck.match(/(?:QT|QUO|INV)[\w-]+/i);
-  if (nameDocMatch) {
-    result.quotationNo = nameDocMatch[0].toUpperCase();
-  }
+  result.quotationNo = extractQuotationNo(nameToCheck);
 
   // หากไม่มี URL หรือไม่ใช่ลิงก์ HTTP/HTTPS ให้คืนผลลัพธ์ทันที
   if (!fileUrl || typeof fileUrl !== "string" || !fileUrl.startsWith("http")) {
@@ -498,10 +523,7 @@ function extractPdfQuotationData(fileUrl, fileName) {
 
       // 4. ดึงเลขที่เอกสารจากเนื้อหาเพิ่มเติมหากในชื่อไฟล์ไม่มี
       if (!result.quotationNo) {
-        const docMatch = text.match(/(?:QT|QUO|INV)[\w-]+/i);
-        if (docMatch) {
-          result.quotationNo = docMatch[0].toUpperCase();
-        }
+        result.quotationNo = extractQuotationNo(text);
       }
 
       // 5. สกัดยอดเงิน Grand Total (เช่น GRAND TOTAL 39,000.00 หรือ ยอดรวมทั้งสิ้น 39,000.00)
@@ -708,6 +730,10 @@ function parseChatconePayload(payload, rawContent, e) {
 
     // 15 & 16. Quotation No. และ Grand Total (ยอดรวมใบเสนอราคา)
     let quotationNo = item.quotation_no || item.quotationNo || item.doc_no || "";
+    if (quotationNo && !isValidQuotationNo(quotationNo)) {
+      quotationNo = extractQuotationNo(quotationNo);
+    }
+
     let grandTotal = (item.grand_total !== undefined && item.grand_total !== null && item.grand_total !== "")
       ? Number(item.grand_total)
       : (item.grandTotal !== undefined && item.grandTotal !== null && item.grandTotal !== "" ? Number(item.grandTotal) : "");
@@ -726,10 +752,7 @@ function parseChatconePayload(payload, rawContent, e) {
       }
       // สกัดเลขที่เอกสารเบื้องต้นจากชื่อไฟล์หรือข้อความหรือ URL
       if (!quotationNo) {
-        const qMatch = (attachedFileName || messageContent || mediaUrl).match(/(?:QT|QUO|INV)[\w-]+/i);
-        if (qMatch) {
-          quotationNo = qMatch[0].toUpperCase();
-        }
+        quotationNo = extractQuotationNo(attachedFileName) || extractQuotationNo(messageContent) || extractQuotationNo(mediaUrl);
       }
 
       // หากยังไม่มียอดเงิน และมีลิงก์ Media URL ให้รัน OCR สกัดยอดเงินจาก PDF
@@ -742,6 +765,16 @@ function parseChatconePayload(payload, rawContent, e) {
           grandTotal = ocrData.grandTotal;
         }
       }
+    } else {
+      // หากไม่ใช่ไฟล์แนบ แต่เป็นข้อความแชทที่มีการระบุเลขที่ใบเสนอราคาชัดเจน
+      if (!quotationNo) {
+        quotationNo = extractQuotationNo(messageContent);
+      }
+    }
+
+    // ตรวจสอบความถูกต้องรอบสุดท้าย หากไม่ใช่รูปแบบที่ถูกต้องให้เป็นค่าว่าง
+    if (!isValidQuotationNo(quotationNo)) {
+      quotationNo = "";
     }
 
     rows.push([
@@ -954,6 +987,19 @@ function onOpen() {
 }
 
 /**
+ * เพิ่มเมนูบน Google Sheets เมื่อเปิดไฟล์ เพื่อให้กดจัดระเบียบตารางและล้างข้อมูลผิดพลาดได้สะดวก
+ */
+function onOpen() {
+  try {
+    SpreadsheetApp.getUi()
+      .createMenu("🚀 Chatcone Webhook")
+      .addItem("🛠️ จัดระเบียบตารางและล้างข้อมูลผิดพลาด (Quotation No.)", "fixAndCleanColumns")
+      .addItem("📋 สร้าง/รีเซ็ตหัวตารางมาตรฐาน 16 คอลัมน์", "setupSheet")
+      .addToUi();
+  } catch (e) {}
+}
+
+/**
  * ฟังก์ชันสำหรับทดสอบสร้างตารางด้วยตัวเอง (Manual Run)
  */
 function setupSheet() {
@@ -1036,6 +1082,7 @@ function fixAndCleanColumns() {
       messageId = row[12] || "-";
       rawJson = row[13] || "";
       quotationNo = row[14] || "";
+      if (quotationNo && !isValidQuotationNo(quotationNo)) quotationNo = extractQuotationNo(quotationNo);
       grandTotal = row[15] !== "" ? Number(row[15]) : "";
     } else {
       // ตารางเวอร์ชันเก่า (11, 13 หรือ 15 คอลัมน์ หรือแถวที่เลื่อนเพราะไม่มีคอลัมน์ Account)
@@ -1059,7 +1106,10 @@ function fixAndCleanColumns() {
           conversationId = row[10] || "-";
           messageId = row[11] || "-";
           rawJson = row[12] || "";
-          if (lastCol >= 14) quotationNo = row[13] || "";
+          if (lastCol >= 14) {
+            quotationNo = row[13] || "";
+            if (quotationNo && !isValidQuotationNo(quotationNo)) quotationNo = extractQuotationNo(quotationNo);
+          }
           if (lastCol >= 15) grandTotal = row[14] !== "" ? Number(row[14]) : "";
         } else {
           mediaUrl = row[7] || "";
@@ -1142,7 +1192,8 @@ function fixAndCleanColumns() {
             if (autoDetected) detectedAccount = autoDetected;
           }
           if (!quotationNo && (itemData.quotation_no || itemData.quotationNo || itemData.doc_no)) {
-            quotationNo = itemData.quotation_no || itemData.quotationNo || itemData.doc_no;
+            const rawQ = itemData.quotation_no || itemData.quotationNo || itemData.doc_no;
+            quotationNo = isValidQuotationNo(rawQ) ? rawQ : extractQuotationNo(rawQ);
           }
           if (grandTotal === "" && (itemData.grand_total !== undefined || itemData.grandTotal !== undefined)) {
             const gt = itemData.grand_total !== undefined ? itemData.grand_total : itemData.grandTotal;
@@ -1195,8 +1246,10 @@ function fixAndCleanColumns() {
 
     // 4. ดึง Quotation No. จากชื่อไฟล์ ข้อความ หรือ mediaUrl
     if (!quotationNo) {
-      const qm = (messageContent || mediaUrl || rawJson || "").match(/(?:QT|QUO|INV)[\w-]+/i);
-      if (qm) quotationNo = qm[0].toUpperCase();
+      quotationNo = extractQuotationNo(messageContent) || extractQuotationNo(mediaUrl);
+      if (!quotationNo && rawJson && typeof rawJson === "string") {
+        quotationNo = extractQuotationNo(rawJson);
+      }
     }
 
     // 5. หากยังไม่มียอดเงิน และมี URL ไฟล์ PDF จริง ให้รัน OCR ดึงยอดเงิน
@@ -1207,6 +1260,11 @@ function fixAndCleanColumns() {
         if (!quotationNo && ocrData.quotationNo) quotationNo = ocrData.quotationNo;
         if (ocrData.grandTotal !== "") grandTotal = ocrData.grandTotal;
       }
+    }
+
+    // ตรวจสอบความถูกต้องรอบสุดท้าย หากไม่ใช่รูปแบบที่ถูกต้องให้เป็นค่าว่าง (ล้าง QTEC, QTDACCBDTCN8A ออก)
+    if (!isValidQuotationNo(quotationNo)) {
+      quotationNo = "";
     }
 
     newRows.push([
