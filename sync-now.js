@@ -240,39 +240,24 @@ async function run() {
     }
   }
 
-  const isReset = process.argv.includes('--reset');
-  let syncedIds = new Set();
+  console.log('🔄 โหมดล้างตารางและเขียนใหม่ทุกครั้ง (Auto Clear & Fresh Sync):');
+  console.log('📅 ดึงข้อมูล 2 วันล่าสุด และสร้างตาราง 16 คอลัมน์ใหม่อัตโนมัติในทุกรอบ');
 
-  if (isReset) {
-    console.log('🔄 โหมดรีเซ็ตตาราง: กำลังล้างข้อมูลเก่าและดึงข้อมูล 2 วันล่าสุดใหม่ทั้งหมด...');
-    saveSyncedIds(new Set());
-  } else {
-    // ตรวจสอบ Message ID ที่มีอยู่ใน Google Sheets แล้วเพื่อไม่ให้บันทึกซ้ำ
-    console.log('🔍 กำลังตรวจสอบข้อความที่มีอยู่ใน Google Sheets...');
-    try {
-      const checkRes = await postToGoogleSheets([], 'get_existing_ids');
-      if (checkRes && checkRes.data && !checkRes.data.trim().startsWith('<')) {
-        let parsed = null;
-        try {
-          parsed = typeof checkRes.data === 'string' ? JSON.parse(checkRes.data) : checkRes.data;
-        } catch (pe) {}
-
-        if (parsed && parsed.status === 'success' && Array.isArray(parsed.ids)) {
-          syncedIds = new Set(parsed.ids);
-          console.log(`📋 พบข้อความเดิมใน Google Sheets แล้ว ${syncedIds.size} ข้อความ`);
-        } else {
-          console.log('⚠️ ไม่สามารถดึง ID จากชีตได้ (อาจยังไม่ได้ Deploy Apps Script เวอร์ชันใหม่) จะใช้ Local Cache แทน');
-          syncedIds = loadSyncedIds();
-        }
-      } else {
-        console.log('⚠️ ไม่สามารถดึง ID จาก Google Sheets ได้ จะใช้ Local Cache แทน');
-        syncedIds = loadSyncedIds();
+  // ตรวจสอบเวอร์ชันของ Google Apps Script Webhook
+  try {
+    const healthRes = await fetch(GOOGLE_WEBHOOK_URL).then(r => r.json()).catch(() => null);
+    if (healthRes && healthRes.version) {
+      console.log(`📡 เวอร์ชัน Webhook ปัจจุบัน: ${healthRes.version}`);
+      if (healthRes.version === '1.0.0') {
+        console.warn('\n⚠️ [คำเตือนสำคัญมาก] Webhook บน Google Apps Script ยังคงรันอยู่ที่เวอร์ชัน 1.0.0 (15 คอลัมน์)');
+        console.warn('   👉 ทำให้ข้อมูลที่ส่งไปถูกเลื่อนคอลัมน์ (เช่น LINE OA ไปตกในช่อง Account)');
+        console.warn('   👉 วิธีแก้: ไปที่ Google Sheet > Extensions > Apps Script > Deploy > Manage deployments > Edit > New version > Deploy\n');
       }
-    } catch (e) {
-      console.log('⚠️ เกิดข้อผิดพลาดขณะดึง ID จาก Google Sheets จะใช้ Local Cache แทน:', e.message);
-      syncedIds = loadSyncedIds();
     }
-  }
+  } catch (e) {}
+
+  const syncedIds = new Set();
+  saveSyncedIds(new Set());
 
   const allNewEvents = [];
   const syncStartTime = getSyncStartDate();
@@ -555,8 +540,8 @@ async function run() {
     const CHUNK_SIZE = 100;
     const totalChunks = Math.ceil(allNewEvents.length / CHUNK_SIZE);
     for (let i = 0; i < allNewEvents.length; i += CHUNK_SIZE) {
-      const chunk = allNewEvents.slice(i, i + CHUNK_SIZE);
-      const action = (i === 0 && isReset) ? 'reset_and_sync' : 'sync';
+      // ชุดแรกจะสั่ง reset_and_sync เสมอ เพื่อล้างชีตเดิมแล้วเขียนหัวตาราง 16 คอลัมน์ใหม่หมดจด
+      const action = (i === 0) ? 'reset_and_sync' : 'sync';
       const chunkIndex = Math.floor(i / CHUNK_SIZE) + 1;
       console.log(`⏳ กำลังส่งข้อมูลชุดที่ ${chunkIndex}/${totalChunks} (${chunk.length} ข้อความ)...`);
       const res = await postToGoogleSheets(chunk, action, { skip_log: totalChunks > 1 });
