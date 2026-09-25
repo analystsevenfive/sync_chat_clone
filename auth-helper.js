@@ -9,8 +9,181 @@ const http = require('http');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const crypto = require('crypto');
 
 const TOKEN_CACHE_FILE = path.join(__dirname, '.chatcone_token');
+
+// Polyfill WebSocket สำหรับ Node.js เวอร์ชันเก่า (เช่น Node 18, 20) หาก global.WebSocket ไม่มีอยู่
+function createFallbackWebSocket() {
+  return class SimpleWebSocket {
+    constructor(url) {
+      this.url = new URL(url);
+      this.listeners = {};
+      this.readyState = 0; // CONNECTING
+      this.onopen = null;
+      this.onerror = null;
+      this.onmessage = null;
+      this.onclose = null;
+      this._connect();
+    }
+
+    addEventListener(type, cb) {
+      if (!this.listeners[type]) this.listeners[type] = [];
+      this.listeners[type].push(cb);
+    }
+
+    removeEventListener(type, cb) {
+      if (this.listeners[type]) {
+        this.listeners[type] = this.listeners[type].filter(fn => fn !== cb);
+      }
+    }
+
+    _emit(type, evt) {
+      if (this['on' + type]) {
+        try { this['on' + type](evt); } catch (e) {}
+      }
+      if (this.listeners[type]) {
+        this.listeners[type].forEach(fn => {
+          try { fn(evt); } catch (e) {}
+        });
+      }
+    }
+
+    _connect() {
+      const key = crypto.randomBytes(16).toString('base64');
+      const req = http.request({
+        hostname: this.url.hostname,
+        port: this.url.port || (this.url.protocol === 'wss:' ? 443 : 80),
+        path: this.url.pathname + this.url.search,
+        headers: {
+          'Connection': 'Upgrade',
+          'Upgrade': 'websocket',
+          'Sec-WebSocket-Version': '13',
+          'Sec-WebSocket-Key': key
+        }
+      });
+
+      req.on('error', (err) => {
+        this._emit('error', err);
+      });
+
+      req.on('upgrade', (res, socket) => {
+        this.socket = socket;
+        this.readyState = 1; // OPEN
+        this._emit('open', {});
+
+        let buffer = Buffer.alloc(0);
+
+        socket.on('data', (chunk) => {
+          buffer = Buffer.concat([buffer, chunk]);
+          while (buffer.length >= 2) {
+            const firstByte = buffer[0];
+            const secondByte = buffer[1];
+            const opcode = firstByte & 0x0f;
+            let payloadLength = secondByte & 0x7f;
+            let offset = 2;
+
+            if (payloadLength === 126) {
+              if (buffer.length < 4) break;
+              payloadLength = buffer.readUInt16BE(2);
+              offset = 4;
+            } else if (payloadLength === 127) {
+              if (buffer.length < 10) break;
+              payloadLength = Number(buffer.readBigUInt64BE(2));
+              offset = 10;
+            }
+
+            const isMasked = (secondByte & 0x80) !== 0;
+            let maskKey = null;
+            if (isMasked) {
+              if (buffer.length < offset + 4) break;
+              maskKey = buffer.slice(offset, offset + 4);
+              offset += 4;
+            }
+
+            if (buffer.length < offset + payloadLength) break;
+
+            let payload = buffer.slice(offset, offset + payloadLength);
+            buffer = buffer.slice(offset + payloadLength);
+
+            if (isMasked && maskKey) {
+              for (let i = 0; i < payload.length; i++) {
+                payload[i] ^= maskKey[i % 4];
+              }
+            }
+
+            if (opcode === 1) { // Text frame
+              const text = payload.toString('utf8');
+              this._emit('message', { data: text });
+            } else if (opcode === 8) { // Close frame
+              this.close();
+            } else if (opcode === 9) { // Ping frame
+              const pong = Buffer.from([0x8a, 0x00]);
+              socket.write(pong);
+            }
+          }
+        });
+
+        socket.on('close', () => {
+          this.readyState = 3;
+          this._emit('close', {});
+        });
+
+        socket.on('error', (err) => {
+          this._emit('error', err);
+        });
+      });
+
+      req.end();
+    }
+
+    send(data) {
+      if (!this.socket || this.readyState !== 1) return;
+      const payload = Buffer.from(data, 'utf8');
+      const maskKey = crypto.randomBytes(4);
+      let header;
+
+      if (payload.length < 126) {
+        header = Buffer.alloc(6);
+        header[0] = 0x81;
+        header[1] = 0x80 | payload.length;
+        maskKey.copy(header, 2);
+      } else if (payload.length <= 65535) {
+        header = Buffer.alloc(8);
+        header[0] = 0x81;
+        header[1] = 0x80 | 126;
+        header.writeUInt16BE(payload.length, 2);
+        maskKey.copy(header, 4);
+      } else {
+        header = Buffer.alloc(14);
+        header[0] = 0x81;
+        header[1] = 0x80 | 127;
+        header.writeBigUInt64BE(BigInt(payload.length), 2);
+        maskKey.copy(header, 10);
+      }
+
+      const maskedPayload = Buffer.alloc(payload.length);
+      for (let i = 0; i < payload.length; i++) {
+        maskedPayload[i] = payload[i] ^ maskKey[i % 4];
+      }
+
+      this.socket.write(Buffer.concat([header, maskedPayload]));
+    }
+
+    close() {
+      this.readyState = 2; // CLOSING
+      if (this.socket) {
+        try {
+          this.socket.write(Buffer.from([0x88, 0x80, 0x00, 0x00, 0x00, 0x00]));
+          this.socket.end();
+        } catch (e) {}
+      }
+      this.readyState = 3; // CLOSED
+    }
+  };
+}
+
+const WebSocketClient = (typeof globalThis.WebSocket !== 'undefined') ? globalThis.WebSocket : createFallbackWebSocket();
 
 // ค้นหาตำแหน่ง Browser บนเครื่อง (รองรับ Windows, Linux / GitHub Actions, macOS)
 function getBrowserPath() {
@@ -132,7 +305,7 @@ async function fetchChatconeToken(username, password) {
 
   try {
     const wsUrl = await getWsDebuggerUrl(port);
-    browserWs = new WebSocket(wsUrl);
+    browserWs = new WebSocketClient(wsUrl);
     await new Promise((resolve, reject) => {
       browserWs.onopen = resolve;
       browserWs.onerror = reject;
@@ -157,7 +330,7 @@ async function fetchChatconeToken(username, password) {
 
     // สร้าง Page Target สำหรับ Login
     const target = await sendBrowser('Target.createTarget', { url: 'https://portal.chatcone.com/' });
-    targetWs = new WebSocket(`ws://127.0.0.1:${port}/devtools/page/${target.targetId}`);
+    targetWs = new WebSocketClient(`ws://127.0.0.1:${port}/devtools/page/${target.targetId}`);
     await new Promise((resolve, reject) => {
       targetWs.onopen = resolve;
       targetWs.onerror = reject;

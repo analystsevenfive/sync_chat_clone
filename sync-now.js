@@ -124,15 +124,26 @@ async function chatconeRequest(accountConfig, channelId, reqPath, method, body, 
 
 async function postCustomPayload(payloadObj) {
   const postData = JSON.stringify(payloadObj);
-  const res = await fetch(GOOGLE_WEBHOOK_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'text/plain;charset=utf-8'
-    },
-    body: postData
-  });
-  const text = await res.text();
-  return { status: res.status, data: text };
+  try {
+    const res = await fetch(GOOGLE_WEBHOOK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain;charset=utf-8'
+      },
+      body: postData
+    });
+    const text = await res.text();
+    if (text && text.trim().startsWith('<')) {
+      console.warn('\n⚠️ [คำเตือน Webhook] Google Sheets ส่งกลับมาเป็นหน้าเว็บ HTML แทนที่จะเป็น JSON');
+      console.warn('   👉 สาเหตุที่เป็นไปได้:');
+      console.warn('      1. Webhook URL ใน Google Apps Script ยังไม่ได้ตั้งค่าสิทธิ์ "ใครมีสิทธิ์เข้าถึง (Who has access)" เป็น "ทุกคน (Anyone)"');
+      console.warn('      2. หรือค่า GOOGLE_WEBHOOK_URL ใน GitHub Secrets ใส่เป็น URL ของชีต ไม่ใช่ Web App URL (/exec)');
+      console.warn('   👉 URL ปัจจุบัน:', GOOGLE_WEBHOOK_URL.substring(0, 60) + '...\n');
+    }
+    return { status: res.status, data: text };
+  } catch (err) {
+    return { status: 500, error: err.message, data: '' };
+  }
 }
 
 async function postToGoogleSheets(events, action, extraParams = {}) {
@@ -240,9 +251,13 @@ async function run() {
     console.log('🔍 กำลังตรวจสอบข้อความที่มีอยู่ใน Google Sheets...');
     try {
       const checkRes = await postToGoogleSheets([], 'get_existing_ids');
-      if (checkRes && checkRes.data) {
-        const parsed = typeof checkRes.data === 'string' ? JSON.parse(checkRes.data) : checkRes.data;
-        if (parsed.status === 'success' && Array.isArray(parsed.ids)) {
+      if (checkRes && checkRes.data && !checkRes.data.trim().startsWith('<')) {
+        let parsed = null;
+        try {
+          parsed = typeof checkRes.data === 'string' ? JSON.parse(checkRes.data) : checkRes.data;
+        } catch (pe) {}
+
+        if (parsed && parsed.status === 'success' && Array.isArray(parsed.ids)) {
           syncedIds = new Set(parsed.ids);
           console.log(`📋 พบข้อความเดิมใน Google Sheets แล้ว ${syncedIds.size} ข้อความ`);
         } else {
@@ -250,6 +265,7 @@ async function run() {
           syncedIds = loadSyncedIds();
         }
       } else {
+        console.log('⚠️ ไม่สามารถดึง ID จาก Google Sheets ได้ จะใช้ Local Cache แทน');
         syncedIds = loadSyncedIds();
       }
     } catch (e) {
