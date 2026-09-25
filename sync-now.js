@@ -122,8 +122,8 @@ async function chatconeRequest(accountConfig, channelId, reqPath, method, body, 
   return res;
 }
 
-async function postToGoogleSheets(events, action) {
-  const postData = JSON.stringify({ action: action || 'sync', events: events });
+async function postCustomPayload(payloadObj) {
+  const postData = JSON.stringify(payloadObj);
   const res = await fetch(GOOGLE_WEBHOOK_URL, {
     method: 'POST',
     headers: {
@@ -133,6 +133,14 @@ async function postToGoogleSheets(events, action) {
   });
   const text = await res.text();
   return { status: res.status, data: text };
+}
+
+async function postToGoogleSheets(events, action, extraParams = {}) {
+  return postCustomPayload({
+    action: action || 'sync',
+    events: events,
+    ...extraParams
+  });
 }
 
 function formatThaiTime(timestamp) {
@@ -237,10 +245,15 @@ async function run() {
         if (parsed.status === 'success' && Array.isArray(parsed.ids)) {
           syncedIds = new Set(parsed.ids);
           console.log(`📋 พบข้อความเดิมใน Google Sheets แล้ว ${syncedIds.size} ข้อความ`);
+        } else {
+          console.log('⚠️ ไม่สามารถดึง ID จากชีตได้ (อาจยังไม่ได้ Deploy Apps Script เวอร์ชันใหม่) จะใช้ Local Cache แทน');
+          syncedIds = loadSyncedIds();
         }
+      } else {
+        syncedIds = loadSyncedIds();
       }
     } catch (e) {
-      console.log('⚠️ ไม่สามารถดึง ID จาก Google Sheets ได้ จะใช้ Local Cache แทน');
+      console.log('⚠️ เกิดข้อผิดพลาดขณะดึง ID จาก Google Sheets จะใช้ Local Cache แทน:', e.message);
       syncedIds = loadSyncedIds();
     }
   }
@@ -511,20 +524,67 @@ async function run() {
     console.log(`\n==================================================`);
     console.log(`📤 กำลังบันทึกข้อความใหม่ทั้งหมด ${allNewEvents.length} ข้อความลง Google Sheets...`);
     
+    // นับแยกบัญชี
+    let countDistributor = 0;
+    let countOfficial = 0;
+    for (const ev of allNewEvents) {
+      if (ev.account === 'SevenfiveOfficial') {
+        countOfficial++;
+      } else {
+        countDistributor++;
+      }
+    }
+
     // แบ่งส่งเป็นชุดละ 100 ข้อความ เพื่อป้องกัน timeout
     const CHUNK_SIZE = 100;
+    const totalChunks = Math.ceil(allNewEvents.length / CHUNK_SIZE);
     for (let i = 0; i < allNewEvents.length; i += CHUNK_SIZE) {
       const chunk = allNewEvents.slice(i, i + CHUNK_SIZE);
       const action = (i === 0 && isReset) ? 'reset_and_sync' : 'sync';
-      console.log(`⏳ กำลังส่งข้อมูลชุดที่ ${Math.floor(i / CHUNK_SIZE) + 1} (${chunk.length} ข้อความ)...`);
-      const res = await postToGoogleSheets(chunk, action);
+      const chunkIndex = Math.floor(i / CHUNK_SIZE) + 1;
+      console.log(`⏳ กำลังส่งข้อมูลชุดที่ ${chunkIndex}/${totalChunks} (${chunk.length} ข้อความ)...`);
+      const res = await postToGoogleSheets(chunk, action, { skip_log: totalChunks > 1 });
       console.log('   ผลตอบกลับ:', res.data);
+    }
+
+    // ถ้าส่งหลายชุด ให้บันทึก Log สรุปภาพรวมทั้งหมด 1 แถวใน Sync_Logs
+    if (totalChunks > 1) {
+      console.log('📝 กำลังบันทึกประวัติสรุปภาพรวมทั้งหมดลงชีต Sync_Logs...');
+      try {
+        const summaryRes = await postCustomPayload({
+          action: 'log_summary',
+          log_action: 'Batch Sync',
+          status: '✅ สำเร็จ',
+          total_count: allNewEvents.length,
+          distributor_count: countDistributor,
+          official_count: countOfficial,
+          details: `บันทึกข้อความใหม่ลงชีตทั้งหมด ${allNewEvents.length} แถว (${totalChunks} ชุด)`
+        });
+        console.log('   ผลการบันทึก Log:', summaryRes.data);
+      } catch (logErr) {
+        console.log('   ⚠️ ไม่สามารถบันทึก Log รวมได้:', logErr.message);
+      }
     }
 
     saveSyncedIds(syncedIds);
     console.log('\n✅ บันทึกข้อความทั้งหมดลง Google Sheets สำเร็จเรียบร้อย!');
   } else {
     console.log('\n✨ ข้อมูลทุกช่องทางเป็นปัจจุบันแล้ว ไม่มีข้อความใหม่ที่ต้องซิงค์');
+    console.log('📝 กำลังบันทึกประวัติการตรวจสอบรอบนี้ลงชีต Sync_Logs (0 ข้อความ)...');
+    try {
+      const logRes = await postCustomPayload({
+        action: 'log_summary',
+        log_action: 'Batch Sync',
+        status: '✅ ข้อมูลล่าสุดแล้ว',
+        total_count: 0,
+        distributor_count: 0,
+        official_count: 0,
+        details: 'ตรวจสอบแล้ว ข้อมูลเป็นปัจจุบัน ไม่มีข้อความใหม่ที่ต้องซิงค์'
+      });
+      console.log('   ผลการบันทึก Log:', logRes.data);
+    } catch (logErr) {
+      console.log('   ⚠️ ไม่สามารถบันทึก Log ลงชีตได้:', logErr.message);
+    }
   }
 }
 

@@ -272,6 +272,23 @@ function doPost(e) {
       }, 200);
     }
 
+    // หากมีคำขอบันทึกประวัติการ Sync ลงในชีต Sync_Logs โดยตรง (เช่น บันทึกสรุปรอบที่ไม่มีข้อความใหม่ หรือสรุปหลายชุด)
+    if (payload && (payload.action === "log_summary" || payload.action === "record_log")) {
+      recordSyncLog(
+        payload.log_action || "Batch Sync",
+        payload.status || "✅ ข้อมูลล่าสุดแล้ว",
+        Number(payload.total_count) || 0,
+        Number(payload.distributor_count) || 0,
+        Number(payload.official_count) || 0,
+        payload.details || "ตรวจสอบแล้ว ข้อมูลเป็นปัจจุบัน ไม่มีข้อความใหม่ที่ต้องซิงค์"
+      );
+      return createJsonResponse({
+        status: "success",
+        message: "Sync log recorded successfully",
+        timestamp: Utilities.formatDate(new Date(), TIMEZONE, DATE_FORMAT)
+      }, 200);
+    }
+
     // หากมีคำสั่งจัดระเบียบตารางและล้างข้อมูลผิดพลาด (Quotation No.)
     if (payload && (payload.action === "fix_columns" || payload.action === "clean_quotations")) {
       fixAndCleanColumns();
@@ -326,14 +343,28 @@ function doPost(e) {
         }
       }
 
-      recordSyncLog(
-        (payload && payload.action === "sync") ? "Batch Sync" : "Webhook Ingestion",
-        "✅ สำเร็จ",
-        parsedRows.length,
-        countDist,
-        countOff,
-        "บันทึกข้อความใหม่ลงชีต " + parsedRows.length + " แถว"
-      );
+      if (!payload.skip_log) {
+        recordSyncLog(
+          (payload && payload.action === "sync") ? "Batch Sync" : "Webhook Ingestion",
+          "✅ สำเร็จ",
+          parsedRows.length,
+          countDist,
+          countOff,
+          "บันทึกข้อความใหม่ลงชีต " + parsedRows.length + " แถว"
+        );
+      }
+    } else if (payload && (payload.action === "sync" || payload.action === "reset_and_sync") && (!payload.events || payload.events.length === 0)) {
+      // หากส่งคำขอ sync แต่ไม่มีข้อความใหม่ (0 ข้อความ) และไม่ได้สั่ง skip_log
+      if (!payload.skip_log) {
+        recordSyncLog(
+          "Batch Sync",
+          "✅ ข้อมูลล่าสุดแล้ว",
+          0,
+          0,
+          0,
+          "ตรวจสอบแล้ว ข้อมูลเป็นปัจจุบัน ไม่มีข้อความใหม่ที่ต้องซิงค์"
+        );
+      }
     }
 
     return createJsonResponse({
@@ -362,8 +393,8 @@ function doGet(e) {
   return createJsonResponse({
     status: "ok",
     service: "Chatcone to Google Sheets Webhook Sync",
-    version: "1.1.0",
-    features: ["chat_logging", "response_time_tracking", "pdf_quotation_ocr"],
+    version: "1.2.0",
+    features: ["chat_logging", "response_time_tracking", "pdf_quotation_ocr", "sync_summary_logs"],
     server_time: Utilities.formatDate(new Date(), TIMEZONE, DATE_FORMAT),
     instructions: "This endpoint receives POST requests from Chatcone Webhook."
   }, 200);
