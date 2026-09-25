@@ -4,7 +4,7 @@ const path = require('path');
 const { fetchChatconeToken, getOrRefreshToken, isTokenValid, getCachedToken } = require('./auth-helper');
 
 const GOOGLE_WEBHOOK_URL = process.env.GOOGLE_WEBHOOK_URL || 'https://script.google.com/macros/s/AKfycbzH7Ip9zBoa58KgEGEjhwEK6rKfPezsiTUVguYPDVnF27RONxOGFRWK2zeExou6KyYFOg/exec';
-let TOKEN = process.env.CHATCONE_TOKEN || getCachedToken() || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiNjg4MWE1M2VjYjM3ODgwMGFiMGNjNzRkIiwiaWF0IjoxNzkwMjIxMjExLCJleHAiOjE3OTAzMDc2MTF9.3DjEQw1uQa8xS1XGANd1omBmNZXksco2p71Qu3jC_Eg';
+let TOKEN = process.env.CHATCONE_TOKEN || getCachedToken() || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiNjg4MWE1M2VjYjM3ODgwMGFiMGNjNzRkIiwiaWF0IjoxNzkwMzEyMTQzLCJleHAiOjE3OTAzOTg1NDN9.7HORggh5y_QpsnCsgsr4JRSJcPTXDuJzoXny53_W8tQ';
 const AGENT_ID = process.env.CHATCONE_AGENT_ID || '6881a53ecb378800ab0cc74d';
 
 // รายชื่อ 2 บัญชีของ Chatcone (Sevenfive Distributor และ SevenfiveOfficial)

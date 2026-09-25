@@ -278,10 +278,11 @@ function saveCachedToken(token) {
  * @returns {Promise<string>} Bearer token ใหม่
  */
 async function fetchChatconeToken(username, password) {
-  const email = username || process.env.CHATCONE_USERNAME || 'it@sevenfive.co.th';
-  const pwd = password || process.env.CHATCONE_PASSWORD || 'Pass@7575.';
+  const email = (username || process.env.CHATCONE_USERNAME || 'it@sevenfive.co.th').trim();
+  const pwd = (password || process.env.CHATCONE_PASSWORD || 'Pass@7575.').trim();
 
-  console.log(`🤖 กำลังเชื่อมต่อเข้าสู่ระบบ Chatcone แบบอัตโนมัติ (${email})...`);
+  const maskedEmail = email.replace(/(.{2})(.*)(@.*)/, '$1***$3');
+  console.log(`🤖 กำลังเชื่อมต่อเข้าสู่ระบบ Chatcone แบบอัตโนมัติ (${maskedEmail})...`);
 
   const browserPath = getBrowserPath();
   const port = 9333 + Math.floor(Math.random() * 500);
@@ -290,6 +291,8 @@ async function fetchChatconeToken(username, password) {
   const browserProc = spawn(browserPath, [
     `--remote-debugging-port=${port}`,
     '--headless=new',
+    '--window-size=1920,1080',
+    '--start-maximized',
     `--user-data-dir=${tempProfile}`,
     '--disable-gpu',
     '--no-first-run',
@@ -297,6 +300,7 @@ async function fetchChatconeToken(username, password) {
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage',
+    '--disable-blink-features=AutomationControlled',
     'about:blank'
   ]);
 
@@ -353,6 +357,23 @@ async function fetchChatconeToken(username, password) {
       });
     }
 
+    // ดักฟัง Response จาก Network เพื่อดึง Token หรือตรวจจับข้อผิดพลาดจาก API โดยตรง
+    let authRequestId = null;
+    let authApiResponse = null;
+    targetWs.addEventListener('message', (evt) => {
+      try {
+        const d = JSON.parse(evt.data);
+        if (d.method === 'Network.responseReceived') {
+          const resp = d.params.response;
+          const url = resp.url || '';
+          if (url.includes('/login') || url.includes('/auth') || url.includes('/token') || url.includes('/user')) {
+            authApiResponse = resp;
+            authRequestId = d.params.requestId;
+          }
+        }
+      } catch (e) {}
+    });
+
     await sendTarget('Page.enable');
     await sendTarget('Network.enable');
     await sendTarget('Runtime.enable');
@@ -361,63 +382,113 @@ async function fetchChatconeToken(username, password) {
     await sendTarget('Page.navigate', { url: 'https://portal.chatcone.com/' });
 
     // รอให้ Nuxt SSR / Vue Component Hydrate เสร็จสมบูรณ์
-    await new Promise(r => setTimeout(r, 3500));
+    await new Promise(r => setTimeout(r, 4000));
 
-    // กรอกข้อมูล Email, Password และกดปุ่ม Login
+    // กรอกข้อมูล Email, Password และกดปุ่ม Login ด้วย Native Prototype Value Setter
     console.log('   กำลังกรอกข้อมูลและเข้าสู่ระบบ...');
     const fillScript = `
       (function() {
-        const u = document.getElementById('username') || document.querySelector('input[type="text"]') || document.querySelector('input[name="email"]');
+        const u = document.getElementById('username') || document.querySelector('input[type="text"]') || document.querySelector('input[name="email"]') || document.querySelector('input[placeholder*="Email" i]') || document.querySelector('input[placeholder*="อีเมล" i]');
         const p = document.getElementById('password') || document.querySelector('input[type="password"]');
-        const btn = document.querySelector('button.btn--primary-100') || document.querySelector('button[type="submit"]') || document.querySelector('button');
-        if (!u || !p || !btn) return false;
-        u.value = ${JSON.stringify(email)};
-        u.dispatchEvent(new Event('input', { bubbles: true }));
-        u.dispatchEvent(new Event('change', { bubbles: true }));
-        p.value = ${JSON.stringify(pwd)};
-        p.dispatchEvent(new Event('input', { bubbles: true }));
-        p.dispatchEvent(new Event('change', { bubbles: true }));
-        btn.click();
-        return true;
+        const btn = document.querySelector('button.btn--primary-100') || document.querySelector('button[type="submit"]') || document.querySelector('form button') || document.querySelector('button');
+        if (!u || !p) return { ok: false, err: 'inputs not found' };
+
+        function setNativeValue(element, value) {
+          element.focus();
+          const valueSetter = Object.getOwnPropertyDescriptor(element, 'value')?.set;
+          const prototype = Object.getPrototypeOf(element);
+          const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+          if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {
+            prototypeValueSetter.call(element, value);
+          } else if (valueSetter) {
+            valueSetter.call(element, value);
+          } else {
+            element.value = value;
+          }
+          element.dispatchEvent(new Event('input', { bubbles: true }));
+          element.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
+        setNativeValue(u, ${JSON.stringify(email)});
+        setNativeValue(p, ${JSON.stringify(pwd)});
+
+        if (btn) {
+          btn.focus();
+          btn.click();
+        }
+
+        const form = (btn && btn.form) || u.closest('form');
+        if (form) {
+          try { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); } catch(e){}
+        }
+
+        return { ok: true, foundBtn: !!btn };
       })()
     `;
     const fillRes = await sendTarget('Runtime.evaluate', { expression: fillScript, returnByValue: true });
-    if (!fillRes.result || !fillRes.result.value) {
+    if (!fillRes.result || !fillRes.result.value || !fillRes.result.value.ok) {
       throw new Error('ไม่พบฟิลด์กรอกข้อมูล Login บนหน้าเว็บ');
     }
 
-    // รอรับ Token จากคุกกี้หลัง Login สำเร็จ
+    // รอรับ Token จากคุกกี้ / localStorage / Network Response
     let extractedToken = null;
-    for (let i = 0; i < 12; i++) {
+    let apiErrorMessage = '';
+
+    for (let i = 0; i < 15; i++) {
       await new Promise(r => setTimeout(r, 800));
 
+      // 1. ตรวจสอบจากคุกกี้
       const cookieData = await sendTarget('Network.getCookies');
       if (cookieData && cookieData.cookies) {
-        const tokenCookie = cookieData.cookies.find(c => c.name === 'token' && c.value && c.value.length > 30);
+        const tokenCookie = cookieData.cookies.find(c => (c.name === 'token' || c.name === 'auth._token.local') && c.value && c.value.length > 30);
         if (tokenCookie) {
-          extractedToken = tokenCookie.value;
+          extractedToken = tokenCookie.value.replace(/^Bearer\s+/i, '');
           break;
         }
       }
 
-      // ตรวจสอบจาก localStorage
+      // 2. ตรวจสอบจาก localStorage / sessionStorage
       const lsData = await sendTarget('Runtime.evaluate', {
-        expression: 'localStorage.getItem("token") || localStorage.getItem("access_token") || ""',
+        expression: 'localStorage.getItem("token") || localStorage.getItem("auth._token.local") || localStorage.getItem("access_token") || sessionStorage.getItem("token") || ""',
         returnByValue: true
       });
       if (lsData.result && lsData.result.value && lsData.result.value.length > 30) {
-        extractedToken = lsData.result.value;
+        extractedToken = lsData.result.value.replace(/^Bearer\s+/i, '');
         break;
+      }
+
+      // 3. ตรวจสอบจาก Network Response Body
+      if (authRequestId && !extractedToken) {
+        try {
+          const bodyData = await sendTarget('Network.getResponseBody', { requestId: authRequestId });
+          if (bodyData && bodyData.body) {
+            const parsed = JSON.parse(bodyData.body);
+            const token = parsed.token || parsed.access_token || (parsed.response && (parsed.response.token || parsed.response.access_token)) || (parsed.data && parsed.data.token);
+            if (token && typeof token === 'string' && token.length > 30) {
+              extractedToken = token.replace(/^Bearer\s+/i, '');
+              break;
+            }
+            if (parsed.message || parsed.statusMessage) {
+              apiErrorMessage = parsed.message || parsed.statusMessage;
+            }
+          }
+        } catch (e) {}
       }
     }
 
     if (!extractedToken) {
-      const errText = await sendTarget('Runtime.evaluate', {
-        expression: 'document.querySelector(".invalid-feedback, .error, .text-danger")?.innerText || ""',
+      const pageInfo = await sendTarget('Runtime.evaluate', {
+        expression: `({
+          url: window.location.href,
+          error: document.querySelector('.invalid-feedback, .error, .text-danger, .toast, .swal2-content, .alert, .notification')?.innerText || '',
+          bodySnippet: (document.body ? document.body.innerText : '').substring(0, 300)
+        })`,
         returnByValue: true
       });
-      const reason = errText.result && errText.result.value ? ` (${errText.result.value})` : '';
-      throw new Error(`ไม่สามารถดึง Token หลัง Login ได้ ตรวจสอบอีเมลและรหัสผ่าน${reason}`);
+      const info = pageInfo.result && pageInfo.result.value ? pageInfo.result.value : {};
+      const reason = apiErrorMessage || info.error || (info.url && !info.url.includes('chat') ? `ยังอยู่ที่หน้า ${info.url}` : '');
+      const detailMsg = reason ? ` (${reason})` : '';
+      throw new Error(`ไม่สามารถดึง Token หลัง Login ได้${detailMsg} กรุณาตรวจสอบว่าอีเมล/รหัสผ่านใน GitHub Secrets ถูกต้องหรือไม่`);
     }
 
     console.log('✅ เข้าสู่ระบบสำเร็จและได้รับ Chatcone Token ใหม่เรียบร้อย!');
