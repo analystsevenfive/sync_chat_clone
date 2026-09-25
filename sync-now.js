@@ -7,10 +7,10 @@ const GOOGLE_WEBHOOK_URL = process.env.GOOGLE_WEBHOOK_URL || 'https://script.goo
 let TOKEN = process.env.CHATCONE_TOKEN || getCachedToken() || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiNjg4MWE1M2VjYjM3ODgwMGFiMGNjNzRkIiwiaWF0IjoxNzkwMzEyMTQzLCJleHAiOjE3OTAzOTg1NDN9.7HORggh5y_QpsnCsgsr4JRSJcPTXDuJzoXny53_W8tQ';
 const AGENT_ID = process.env.CHATCONE_AGENT_ID || '6881a53ecb378800ab0cc74d';
 
-// รายชื่อ 2 บัญชีของ Chatcone (Sevenfive Distributor และ SevenfiveOfficial)
+// รายชื่อ 2 บัญชีของ Chatcone (SevenfiveOfficial และ Sevenfive Distributor)
 const ACCOUNTS = [
   {
-    name: 'Sevenfive Distributor',
+    name: 'SevenfiveOfficial',
     company_id: '68819f44dd184b85876ac383',
     slug: 'x0Wteloe',
     referer: 'https://portal.chatcone.com/x0Wteloe/chat',
@@ -22,7 +22,7 @@ const ACCOUNTS = [
     ]
   },
   {
-    name: 'SevenfiveOfficial',
+    name: 'Sevenfive Distributor',
     company_id: '68819f3edd184b81dc6ac35e',
     slug: 'G6zVti0a',
     referer: 'https://portal.chatcone.com/G6zVti0a/chat',
@@ -122,27 +122,33 @@ async function chatconeRequest(accountConfig, channelId, reqPath, method, body, 
   return res;
 }
 
-async function postCustomPayload(payloadObj) {
+async function postCustomPayload(payloadObj, retries = 2) {
   const postData = JSON.stringify(payloadObj);
-  try {
-    const res = await fetch(GOOGLE_WEBHOOK_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'text/plain;charset=utf-8'
-      },
-      body: postData
-    });
-    const text = await res.text();
-    if (text && text.trim().startsWith('<')) {
-      console.warn('\n⚠️ [คำเตือน Webhook] Google Sheets ส่งกลับมาเป็นหน้าเว็บ HTML แทนที่จะเป็น JSON');
-      console.warn('   👉 สาเหตุที่เป็นไปได้:');
-      console.warn('      1. Webhook URL ใน Google Apps Script ยังไม่ได้ตั้งค่าสิทธิ์ "ใครมีสิทธิ์เข้าถึง (Who has access)" เป็น "ทุกคน (Anyone)"');
-      console.warn('      2. หรือค่า GOOGLE_WEBHOOK_URL ใน GitHub Secrets ใส่เป็น URL ของชีต ไม่ใช่ Web App URL (/exec)');
-      console.warn('   👉 URL ปัจจุบัน:', GOOGLE_WEBHOOK_URL.substring(0, 60) + '...\n');
+  for (let attempt = 1; attempt <= retries + 1; attempt++) {
+    try {
+      const res = await fetch(GOOGLE_WEBHOOK_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain;charset=utf-8'
+        },
+        body: postData
+      });
+      const text = await res.text();
+      if (text && text.trim().startsWith('<')) {
+        if (attempt <= retries) {
+          console.warn(`   ⚠️ Webhook ส่งกลับ HTML (Google Apps Script กำลังเตรียมพร้อม) กำลังลองใหม่รอบที่ ${attempt}/${retries}...`);
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+      }
+      return { status: res.status, data: text };
+    } catch (err) {
+      if (attempt <= retries) {
+        await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
+      return { status: 500, error: err.message, data: '' };
     }
-    return { status: res.status, data: text };
-  } catch (err) {
-    return { status: 500, error: err.message, data: '' };
   }
 }
 
@@ -168,9 +174,9 @@ function formatThaiTime(timestamp) {
   return String(timestamp);
 }
 
-// กำหนดจำนวนวันย้อนหลัง: 2 วันล่าสุด (เมื่อวานและวันนี้)
+// กำหนดจำนวนวันย้อนหลัง: 3 วันล่าสุด (ครอบคลุมทั้ง SevenfiveOfficial และ Sevenfive Distributor)
 const customDaysArg = process.argv.find(arg => arg.startsWith('--days='));
-const SYNC_DAYS = customDaysArg ? parseInt(customDaysArg.split('=')[1], 10) : 2;
+const SYNC_DAYS = customDaysArg ? parseInt(customDaysArg.split('=')[1], 10) : 3;
 
 function getSyncStartDate() {
   const now = new Date();

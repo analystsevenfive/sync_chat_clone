@@ -27,47 +27,50 @@ const LOG_SHEET_NAME = "Sync_Logs";
 const TIMEZONE = "Asia/Bangkok";
 const DATE_FORMAT = "yyyy-MM-dd HH:mm:ss";
 
-// กรองเฉพาะข้อความ 2 วันล่าสุด (เมื่อวานและวันนี้ ตั้งแต่เมื่อวาน 00:00:00 น. เป็นต้นมา)
-const FILTER_LAST_DAYS = 2;
+// กรองเฉพาะข้อความ 3 วันล่าสุด (ครอบคลุมทั้ง SevenfiveOfficial และ Sevenfive Distributor)
+const FILTER_LAST_DAYS = 3;
 
 // =========================================================================
 // 🏢 การตั้งค่าและตรวจจับบัญชีอัตโนมัติ (Multi-Account Auto-Detection)
 // =========================================================================
 const KNOWN_ACCOUNTS = {
-  // SevenfiveOfficial
-  '68819f3edd184b81dc6ac35e': 'SevenfiveOfficial', // company_id
-  '6881c67ddd184b54a06b025c': 'SevenfiveOfficial', // FB Messenger channel_id
-  '68819f3edd184bf5276ac35f': 'SevenfiveOfficial', // LINE OA channel_id
-  'g6zvti0a': 'SevenfiveOfficial',                 // slug
-  // SevenfiveOfficial Conversation IDs & Customer IDs
-  '6ab236169c044f50b2d4f07d': 'SevenfiveOfficial', // Vatsana Ngaovongsa conversation_id
-  '68e354479c044f50b2ff1f84': 'SevenfiveOfficial', // Yim Pornpitra conversation_id
-  '6ab1c3d49c044f50b2f735f9': 'SevenfiveOfficial', // MaPrang Sawasdee conversation_id
-  '6aaa7e429c044f50b245f8ab': 'SevenfiveOfficial', // Chefkareem Bunchom conversation_id
-  '6aaa52929c044f50b20c7040': 'SevenfiveOfficial', // Henglian Foodmachinery conversation_id
-  '28411662208496281': 'SevenfiveOfficial',         // Vatsana social_id
-  '8467799049993319': 'SevenfiveOfficial',          // Yim social_id
-  '28363069283392839': 'SevenfiveOfficial',         // MaPrang social_id
-  '27863191193295626': 'SevenfiveOfficial',
-  '28976110988648055': 'SevenfiveOfficial',
+  // SevenfiveOfficial (Slug: x0Wteloe)
+  '68819f44dd184b85876ac383': 'SevenfiveOfficial', // company_id
+  '6881b04f2d07422b089ec4c8': 'SevenfiveOfficial', // LINE OA channel_id
+  '68819f44dd184bb7f86ac384': 'SevenfiveOfficial', // FB Messenger channel_id
+  '68844b588be8b73f96d987f3': 'SevenfiveOfficial', // Webchat channel_id
+  'x0wteloe': 'SevenfiveOfficial',                  // slug
 
-  // Sevenfive Distributor
-  '68819f44dd184b85876ac383': 'Sevenfive Distributor', // company_id
-  '6881b04f2d07422b089ec4c8': 'Sevenfive Distributor', // LINE OA channel_id
-  '68819f44dd184bb7f86ac384': 'Sevenfive Distributor', // FB Messenger channel_id
-  '68844b588be8b73f96d987f3': 'Sevenfive Distributor', // Webchat channel_id
-  'x0wteloe': 'Sevenfive Distributor'                  // slug
+  // Sevenfive Distributor (Slug: G6zVti0a)
+  '68819f3edd184b81dc6ac35e': 'Sevenfive Distributor', // company_id
+  '6881c67ddd184b54a06b025c': 'Sevenfive Distributor', // FB Messenger channel_id
+  '68819f3edd184bf5276ac35f': 'Sevenfive Distributor', // LINE OA channel_id
+  'g6zvti0a': 'Sevenfive Distributor',                 // slug
+
+  // Sevenfive Distributor Conversation IDs & Customer IDs
+  '6ab236169c044f50b2d4f07d': 'Sevenfive Distributor', // Vatsana Ngaovongsa conversation_id
+  '68e354479c044f50b2ff1f84': 'Sevenfive Distributor', // Yim Pornpitra conversation_id
+  '6ab1c3d49c044f50b2f735f9': 'Sevenfive Distributor', // MaPrang Sawasdee conversation_id
+  '6aaa7e429c044f50b245f8ab': 'Sevenfive Distributor', // Chefkareem Bunchom conversation_id
+  '6aaa52929c044f50b20c7040': 'Sevenfive Distributor', // Henglian Foodmachinery conversation_id
+  '6ab3e6dc9c044f50b2dac441': 'Sevenfive Distributor', // Wirawan Watcharotone conversation_id
+  '28411662208496281': 'Sevenfive Distributor',         // Vatsana social_id
+  '8467799049993319': 'Sevenfive Distributor',          // Yim social_id
+  '28363069283392839': 'Sevenfive Distributor',         // MaPrang social_id
+  '27863191193295626': 'Sevenfive Distributor',
+  '28976110988648055': 'Sevenfive Distributor'
 };
 
-// รายชื่อลูกค้าเฉพาะของ SevenfiveOfficial
-const OFFICIAL_KNOWN_NAMES = [
+// รายชื่อลูกค้าเฉพาะของ Sevenfive Distributor
+const DISTRIBUTOR_KNOWN_NAMES = [
   'vatsana',
   'ngaovongsa',
   'yim pornpitra',
   'maprang',
   'sawasdee',
   'chefkareem',
-  'henglian'
+  'henglian',
+  'wirawan'
 ];
 
 /**
@@ -150,9 +153,9 @@ function resolveAccountName(item, payload, e, fallbackValue) {
   ).toLowerCase().trim();
 
   if (nameToCheck) {
-    for (let n = 0; n < OFFICIAL_KNOWN_NAMES.length; n++) {
-      if (nameToCheck.includes(OFFICIAL_KNOWN_NAMES[n])) {
-        return "SevenfiveOfficial";
+    for (let n = 0; n < DISTRIBUTOR_KNOWN_NAMES.length; n++) {
+      if (nameToCheck.includes(DISTRIBUTOR_KNOWN_NAMES[n])) {
+        return "Sevenfive Distributor";
       }
     }
   }
@@ -164,15 +167,15 @@ function resolveAccountName(item, payload, e, fallbackValue) {
     ""
   ).toLowerCase();
 
-  if (referer.includes("g6zvti0a")) return "SevenfiveOfficial";
-  if (referer.includes("x0wteloe")) return "Sevenfive Distributor";
+  if (referer.includes("g6zvti0a")) return "Sevenfive Distributor";
+  if (referer.includes("x0wteloe")) return "SevenfiveOfficial";
 
   // 6. หากส่ง fallbackValue มา (และไม่ใช่ค่าว่างและไม่ใช่ Chatcone) ให้ใช้ค่านั้น
   if (fallbackValue && typeof fallbackValue === "string" && fallbackValue.trim() && fallbackValue !== "Chatcone") {
     return fallbackValue.trim();
   }
 
-  return "Sevenfive Distributor";
+  return "SevenfiveOfficial";
 }
 
 /**
@@ -301,9 +304,14 @@ function doPost(e) {
     // หากมีคำสั่งรีเซ็ตชีตเพื่อจัดคอลัมน์ใหม่ทั้งหมด
     if (payload && payload.action === "reset_and_sync") {
       if (sheet) {
-        sheet.clear();
+        const lastRow = sheet.getLastRow();
+        if (lastRow > 1) {
+          sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
+        }
       }
-      sheet = initializeSheet(ss);
+      if (!sheet || sheet.getLastColumn() < 16) {
+        sheet = initializeSheet(ss);
+      }
     } else if (!sheet) {
       sheet = initializeSheet(ss);
     } else {
@@ -1187,9 +1195,9 @@ function fixAndCleanColumns() {
     // ข) ตรวจสอบจากชื่อผู้ส่ง/ลูกค้า
     if (!detectedAccount) {
       const sName = String(senderName || "").toLowerCase().trim();
-      for (let n = 0; n < OFFICIAL_KNOWN_NAMES.length; n++) {
-        if (sName.includes(OFFICIAL_KNOWN_NAMES[n])) {
-          detectedAccount = "SevenfiveOfficial";
+      for (let n = 0; n < DISTRIBUTOR_KNOWN_NAMES.length; n++) {
+        if (sName.includes(DISTRIBUTOR_KNOWN_NAMES[n])) {
+          detectedAccount = "Sevenfive Distributor";
           break;
         }
       }
@@ -1197,9 +1205,9 @@ function fixAndCleanColumns() {
 
     // ค) ตรวจสอบจาก Raw JSON ด้วย Regex (ไม่ต้องพึ่งพา JSON.parse ที่อาจ error จากความยาวข้อความ)
     if (!detectedAccount && rawJson && typeof rawJson === "string") {
-      if (/SevenfiveOfficial|68819f3edd184b81dc6ac35e|6881c67ddd184b54a06b025c|68819f3edd184bf5276ac35f|g6zvti0a/i.test(rawJson)) {
+      if (/x0wteloe|68819f44dd184b85876ac383|6881b04f2d07422b089ec4c8|68819f44dd184bb7f86ac384|68844b588be8b73f96d987f3/i.test(rawJson)) {
         detectedAccount = "SevenfiveOfficial";
-      } else if (/68819f44dd184b85876ac383|6881b04f2d07422b089ec4c8|68819f44dd184bb7f86ac384|68844b588be8b73f96d987f3|x0wteloe/i.test(rawJson)) {
+      } else if (/g6zvti0a|68819f3edd184b81dc6ac35e|6881c67ddd184b54a06b025c|68819f3edd184bf5276ac35f/i.test(rawJson)) {
         detectedAccount = "Sevenfive Distributor";
       }
     }
