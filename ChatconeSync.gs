@@ -178,6 +178,59 @@ function resolveAccountName(item, payload, e, fallbackValue) {
   return "SevenfiveOfficial";
 }
 
+function ensureAccountColumn(sheet) {
+  const lastRow = sheet.getLastRow();
+  const lastColumn = sheet.getLastColumn();
+  if (lastRow < 1 || lastColumn < 3) return false;
+
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0];
+  if (/^Account\b/i.test(String(headers[1] || ""))) return false;
+  if (!/^Channel\b/i.test(String(headers[1] || "")) ||
+      !/^Sender Type\b/i.test(String(headers[2] || ""))) return false;
+
+  const rawIndex = headers.findIndex(header => /Raw JSON/i.test(String(header)));
+  const messageIdIndex = headers.findIndex(header => /Message ID/i.test(String(header)));
+  const senderNameIndex = headers.findIndex(header => /Sender Name/i.test(String(header)));
+  const channelIndex = headers.findIndex(header => /^Channel\b/i.test(String(header)));
+  const oldRows = lastRow > 1
+    ? sheet.getRange(2, 1, lastRow - 1, lastColumn).getValues()
+    : [];
+
+  sheet.insertColumnBefore(2);
+  initializeSheet(SpreadsheetApp.getActiveSpreadsheet());
+
+  if (oldRows.length > 0) {
+    const accounts = oldRows.map(row => {
+      if (!row.some(value => value !== "" && value !== null)) return [""];
+
+      const rawJson = rawIndex >= 0 ? String(row[rawIndex] || "") : "";
+      const messageId = messageIdIndex >= 0 ? String(row[messageIdIndex] || "") : "";
+      let payload = null;
+      let item = null;
+      if (rawJson) {
+        try {
+          payload = JSON.parse(rawJson);
+          const events = Array.isArray(payload)
+            ? payload
+            : (payload && Array.isArray(payload.events) ? payload.events : [payload]);
+          item = events.find(event => messageId && String(event.message_id || event.msg_id || event.id || "") === messageId) || events[0];
+        } catch (e) {}
+      }
+
+      if (!item) {
+        item = {
+          sender_name: senderNameIndex >= 0 ? row[senderNameIndex] : "",
+          channel: channelIndex >= 0 ? row[channelIndex] : ""
+        };
+      }
+      return [resolveAccountName(item, payload, null, "Sevenfive Distributor")];
+    });
+    sheet.getRange(2, 2, accounts.length, 1).setValues(accounts);
+  }
+
+  return true;
+}
+
 /**
  * คำนวณเวลาเริ่มต้นของช่วงที่ต้องการดึง (เมื่อวาน 00:00:00 ตามเวลาประเทศไทย)
  */
@@ -304,6 +357,7 @@ function doPost(e) {
     // หากมีคำสั่งรีเซ็ตชีตเพื่อจัดคอลัมน์ใหม่ทั้งหมด
     if (payload && payload.action === "reset_and_sync") {
       if (sheet) {
+        ensureAccountColumn(sheet);
         const lastRow = sheet.getLastRow();
         if (lastRow > 1) {
           sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
@@ -315,6 +369,7 @@ function doPost(e) {
     } else if (!sheet) {
       sheet = initializeSheet(ss);
     } else {
+      ensureAccountColumn(sheet);
       // ตรวจสอบว่าคอลัมน์หัวตารางเป็นเวอร์ชันล่าสุด 16 คอลัมน์หรือยัง
       const headers = getStandardHeaders();
       if (sheet.getLastColumn() < headers.length) {
@@ -566,7 +621,7 @@ function extractPdfQuotationData(fileUrl, fileName) {
       }
 
       // 5. สกัดยอดเงิน Grand Total (เช่น GRAND TOTAL 39,000.00 หรือ ยอดรวมทั้งสิ้น 39,000.00)
-      const regex = /(?:GRAND\s*TOTAL|TOTAL|ยอดรวมทั้งสิ้น|รวมทั้งสิ้น|จำนวนเงินทั้งสิ้น|ยอดรวมสุทธิ)[\s\S]{0,35}?([\d]{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})/i;
+      const regex = /(?:\b(?:GRAND\s*TOTAL|TOTAL)\b|ยอดรวมทั้งสิ้น|รวมทั้งสิ้น|จำนวนเงินทั้งสิ้น|ยอดรวมสุทธิ)[\s\S]{0,35}?([\d]{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})/i;
       const totalMatch = text.match(regex);
       if (totalMatch) {
         const numStr = totalMatch[1].replace(/,/g, "");
@@ -1015,27 +1070,29 @@ function openSyncLogs() {
  * 🌟 เพิ่มเมนู Chatcone Sync บนแถบเมนู Google Sheets อัตโนมัติเมื่อเปิดไฟล์
  */
 function onOpen() {
-  const ui = SpreadsheetApp.getUi();
-  ui.createMenu("🚀 Chatcone Sync")
-    .addItem("🔄 จัดระเบียบตาราง & อัปเดตบัญชีอัตโนมัติ (Fix & Auto-Detect)", "fixAndCleanColumns")
-    .addItem("📋 ดูประวัติการ Sync (Open Sync Logs)", "openSyncLogs")
-    .addSeparator()
-    .addItem("🧪 ส่งข้อมูลจำลองทดสอบทั้ง 2 บัญชี (Mock Webhook)", "testMockChatconeWebhook")
-    .addItem("⚙️ ตั้งค่าหัวตารางใหม่ (Setup Sheet)", "setupSheet")
-    .addToUi();
-}
-
-/**
- * เพิ่มเมนูบน Google Sheets เมื่อเปิดไฟล์ เพื่อให้กดจัดระเบียบตารางและล้างข้อมูลผิดพลาดได้สะดวก
- */
-function onOpen() {
   try {
     SpreadsheetApp.getUi()
-      .createMenu("🚀 Chatcone Webhook")
-      .addItem("🛠️ จัดระเบียบตารางและล้างข้อมูลผิดพลาด (Quotation No.)", "fixAndCleanColumns")
+      .createMenu("🚀 Chatcone Sync")
+      .addItem("จัดระเบียบตาราง & อัปเดตบัญชีอัตโนมัติ (Fix & Auto-Detect)", "fixAndCleanColumns")
+      .addItem("📋 ดูประวัติการ Sync (Open Sync Logs)", "openSyncLogs")
+      .addSeparator()
+      .addItem("🧪 ส่งข้อมูลจำลองทดสอบทั้ง 2 บัญชี (Mock Webhook)", "testMockChatconeWebhook")
+      .addItem("Restore missing Account column", "repairAccountColumn")
       .addItem("📋 สร้าง/รีเซ็ตหัวตารางมาตรฐาน 16 คอลัมน์", "setupSheet")
       .addToUi();
   } catch (e) {}
+}
+
+function repairAccountColumn() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAME);
+  if (!sheet) {
+    initializeSheet(ss);
+    return;
+  }
+  Logger.log(ensureAccountColumn(sheet)
+    ? "Restored Account column and preserved existing rows."
+    : "Account column already exists or this sheet uses another layout.");
 }
 
 /**
@@ -1368,8 +1425,8 @@ function testMockChatconeWebhook() {
     events: [
       {
         timestamp: new Date().toISOString(),
-        company_id: "68819f44dd184b85876ac383", // Sevenfive Distributor
-        channel_id: "6881b04f2d07422b089ec4c8", // LINE OA
+        company_id: "68819f3edd184b81dc6ac35e", // Sevenfive Distributor
+        channel_id: "68819f3edd184bf5276ac35f", // LINE OA
         channel: "LINE OA",
         sender_type: "Customer",
         sender_name: "สมชาย ใจดี",
@@ -1383,8 +1440,8 @@ function testMockChatconeWebhook() {
       },
       {
         timestamp: new Date().toISOString(),
-        company_id: "68819f44dd184b85876ac383", // Sevenfive Distributor
-        channel_id: "6881b04f2d07422b089ec4c8", // LINE OA
+        company_id: "68819f3edd184b81dc6ac35e", // Sevenfive Distributor
+        channel_id: "68819f3edd184bf5276ac35f", // LINE OA
         channel: "LINE OA",
         sender_type: "Agent",
         sender_name: "LYN NIRADA",
@@ -1404,8 +1461,8 @@ function testMockChatconeWebhook() {
       },
       {
         timestamp: new Date().toISOString(),
-        company_id: "68819f3edd184b81dc6ac35e", // SevenfiveOfficial (Auto-Detect!)
-        channel_id: "6881c67ddd184b54a06b025c", // Facebook Messenger
+        company_id: "68819f44dd184b85876ac383", // SevenfiveOfficial
+        channel_id: "68819f44dd184bb7f86ac384", // Facebook Messenger
         channel: "Facebook Messenger",
         sender_type: "Customer",
         sender_name: "John Doe (SevenfiveOfficial FB)",
@@ -1421,8 +1478,8 @@ function testMockChatconeWebhook() {
       },
       {
         timestamp: new Date().toISOString(),
-        company_id: "68819f3edd184b81dc6ac35e", // SevenfiveOfficial (Auto-Detect!)
-        channel_id: "68819f3edd184bf5276ac35f", // LINE OA
+        company_id: "68819f44dd184b85876ac383", // SevenfiveOfficial
+        channel_id: "6881b04f2d07422b089ec4c8", // LINE OA
         channel: "LINE OA",
         sender_type: "Customer",
         sender_name: "วิภาวัลย์ (SevenfiveOfficial LINE)",
