@@ -28,16 +28,14 @@ async function main() {
   if (!force) {
     console.log('Token ปัจจุบันยังไม่หมดอายุ หากต้องการบังคับดึงใหม่ ให้ใส่ --force:');
     console.log('   node get-token.js --force\n');
-    console.log('Token ปัจจุบัน:');
-    console.log(cached);
+    console.log('Token ยังคงเก็บอยู่ใน .chatcone_token และจะไม่แสดงค่าใน Terminal');
     return;
   }
 
   try {
     const newToken = await fetchChatconeToken();
     console.log('\n==================================================');
-    console.log('🎉 ดึง Token ใหม่สำเร็จ:');
-    console.log(newToken);
+    console.log('🎉 ดึง Token ใหม่สำเร็จ และบันทึกไว้ใน .chatcone_token แล้ว');
     console.log('==================================================\n');
 
     try {

@@ -139,16 +139,12 @@ Chatcone Bearer Token มีอายุการใช้งานจำกั�
    - เมื่อรัน `node sync-now.js` หรือ `run-sync.bat` ระบบจะตรวจสอบวันหมดอายุของ Token ก่อนเสมอ
    - หาก Token หมดอายุ หรือหากพบข้อผิดพลาด `401 Unauthorized` ขณะดึงข้อมูล ระบบจะเปิดเบราว์เซอร์ Headless ในพื้นหลัง เชื่อมต่อเข้าสู่ระบบ Chatcone และดึง Bearer Token ใหม่มาทำงานต่อทันทีแบบไร้รอยต่อ
 2. **การตั้งค่าบัญชี (Credentials)**:
-   - บัญชีเริ่มต้นถูกตั้งค่าไว้ที่ `it@sevenfive.co.th`
-   - สามารถระบุใน `.env` หรือ environment variable:
-     ```env
-     CHATCONE_USERNAME=it@sevenfive.co.th
-     CHATCONE_PASSWORD=Pass@7575.
-     ```
+    - สร้างไฟล์ `.env` ในโฟลเดอร์โปรเจกต์ (ไฟล์นี้ถูกยกเว้นจาก Git) โดยกำหนด `CHATCONE_USERNAME=<your-chatcone-email>` และ `CHATCONE_PASSWORD=<your-chatcone-password>` คนละบรรทัด หรือกำหนด environment variables ในเครื่อง
+    - GitHub Actions ต้องกำหนดค่าเดียวกันใน Repository Secrets ชื่อ `CHATCONE_USERNAME` และ `CHATCONE_PASSWORD`
 3. **การกดขอ Token ใหม่ด้วยตนเอง (Manual Refresh)**:
    - ดับเบิ้ลคลิกไฟล์ **`get-token.bat`** หรือรันคำสั่ง:
      ```bash
      node get-token.js --force
      ```
-   - ระบบจะเข้าสู่ระบบและแสดง Token ใหม่ พร้อมบันทึกลงแคช `.chatcone_token` ให้อัตโนมัติ
+   - ระบบจะเข้าสู่ระบบและบันทึก Token ลงแคช `.chatcone_token` โดยไม่แสดงค่า Token ใน Terminal
 

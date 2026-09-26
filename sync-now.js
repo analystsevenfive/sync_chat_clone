@@ -4,7 +4,7 @@ const path = require('path');
 const { fetchChatconeToken, getOrRefreshToken, isTokenValid, getCachedToken } = require('./auth-helper');
 
 const GOOGLE_WEBHOOK_URL = process.env.GOOGLE_WEBHOOK_URL || 'https://script.google.com/macros/s/AKfycbw9INHiAqObs3cWO0XV8UubCLxCH4E0tLYqA32DS0D9Y7ujEdmGe9THpXfe7OTldoIjUQ/exec';
-let TOKEN = process.env.CHATCONE_TOKEN || getCachedToken() || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiNjg4MWE1M2VjYjM3ODgwMGFiMGNjNzRkIiwiaWF0IjoxNzkwMzEyMTQzLCJleHAiOjE3OTAzOTg1NDN9.7HORggh5y_QpsnCsgsr4JRSJcPTXDuJzoXny53_W8tQ';
+let TOKEN = process.env.CHATCONE_TOKEN || getCachedToken() || null;
 const AGENT_ID = process.env.CHATCONE_AGENT_ID || '6881a53ecb378800ab0cc74d';
 
 // รายชื่อ 2 บัญชีของ Chatcone (SevenfiveOfficial และ Sevenfive Distributor)
@@ -113,9 +113,12 @@ async function chatconeRequest(accountConfig, channelId, reqPath, method, body, 
     console.log('\n⚠️ ได้รับ 401 Unauthorized จาก Chatcone! กำลังต่ออายุ Token ใหม่อัตโนมัติ...');
     try {
       TOKEN = await fetchChatconeToken();
-      res = await executeHttpRequest(accountConfig, channelId, reqPath, method, body, TOKEN);
     } catch (err) {
-      console.error('❌ การต่ออายุ Token อัตโนมัติล้มเหลว:', err.message);
+      throw new Error(`Auto-refresh failed after Chatcone returned 401: ${err.message}`);
+    }
+    res = await executeHttpRequest(accountConfig, channelId, reqPath, method, body, TOKEN);
+    if (res.status === 401) {
+      throw new Error('Chatcone rejected the newly generated token with 401 Unauthorized.');
     }
   }
 
@@ -242,7 +245,7 @@ async function run() {
     try {
       TOKEN = await getOrRefreshToken();
     } catch (e) {
-      console.error('❌ ไม่สามารถต่ออายุ Token อัตโนมัติได้:', e.message);
+      throw new Error(`ไม่สามารถเตรียม Chatcone Token ได้: ${e.message}`);
     }
   }
 
@@ -596,4 +599,7 @@ async function run() {
   }
 }
 
-run().catch(console.error);
+run().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

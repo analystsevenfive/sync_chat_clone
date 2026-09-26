@@ -13,6 +13,27 @@ const crypto = require('crypto');
 
 const TOKEN_CACHE_FILE = path.join(__dirname, '.chatcone_token');
 
+function loadLocalEnv() {
+  const envPath = path.join(__dirname, '.env');
+  if (!fs.existsSync(envPath)) return;
+
+  const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+  for (const line of lines) {
+    const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (!match || process.env[match[1]] !== undefined) continue;
+
+    let value = match[2];
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    } else {
+      value = value.replace(/\s+#.*$/, '').trim();
+    }
+    process.env[match[1]] = value;
+  }
+}
+
+loadLocalEnv();
+
 // Polyfill WebSocket สำหรับ Node.js เวอร์ชันเก่า (เช่น Node 18, 20) หาก global.WebSocket ไม่มีอยู่
 function createFallbackWebSocket() {
   return class SimpleWebSocket {
@@ -211,29 +232,60 @@ function getBrowserPath() {
   throw new Error('ไม่พบ Google Chrome หรือ Microsoft Edge บนเครื่อง กรุณาติดตั้ง Chrome หรือ Edge');
 }
 
-// รอให้ Chrome Debugger Port พร้อมใช้งาน
-async function getWsDebuggerUrl(port, maxAttempts = 20) {
+// รอให้ Chrome/Edge สร้าง DevToolsActivePort และเปิด Debugger endpoint
+async function getWsDebuggerInfo(profilePath, browserProc, maxAttempts = 40) {
+  let lastError = 'DevToolsActivePort has not been created';
+
   for (let i = 0; i < maxAttempts; i++) {
-    try {
-      const data = await new Promise((resolve, reject) => {
-        const req = http.get(`http://127.0.0.1:${port}/json/version`, (res) => {
-          let body = '';
-          res.on('data', chunk => body += chunk);
-          res.on('end', () => {
-            try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
-          });
-        });
-        req.on('error', reject);
-        req.setTimeout(2000, () => { req.destroy(); reject(new Error('timeout')); });
-      });
-      if (data && data.webSocketDebuggerUrl) {
-        return data.webSocketDebuggerUrl;
-      }
-    } catch (e) {
-      await new Promise(r => setTimeout(r, 400));
+    if (browserProc.launchError) {
+      throw new Error(`Chrome/Edge launch failed: ${browserProc.launchError}`);
     }
+    if (browserProc.exitCode !== null) {
+      const stderr = browserProc.stderrOutput.trim();
+      throw new Error(`Chrome/Edge exited before Debugger became ready (code ${browserProc.exitCode}, signal ${browserProc.signalCode || 'none'})${stderr ? `: ${stderr}` : ''}`);
+    }
+
+    const announcedEndpoint = browserProc.stderrOutput.match(/DevTools listening on (ws:\/\/(?:127\.0\.0\.1|localhost):(\d+)\/devtools\/browser\/[^\s]+)/);
+    if (announcedEndpoint) {
+      return {
+        port: Number(announcedEndpoint[2]),
+        webSocketDebuggerUrl: announcedEndpoint[1]
+      };
+    }
+
+    let port = 0;
+    try {
+      const portFile = fs.readFileSync(path.join(profilePath, 'DevToolsActivePort'), 'utf8');
+      port = Number(portFile.split(/\r?\n/)[0]);
+    } catch (e) {}
+
+    if (Number.isInteger(port) && port > 0 && port <= 65535) {
+      try {
+        const data = await new Promise((resolve, reject) => {
+          const req = http.get(`http://127.0.0.1:${port}/json/version`, (res) => {
+            let body = '';
+            res.on('data', chunk => body += chunk);
+            res.on('end', () => {
+              try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+            });
+          });
+          req.on('error', reject);
+          req.setTimeout(1500, () => { req.destroy(); reject(new Error('Debugger endpoint timeout')); });
+        });
+        if (data && data.webSocketDebuggerUrl) {
+          return { port, webSocketDebuggerUrl: data.webSocketDebuggerUrl };
+        }
+        lastError = 'Debugger endpoint did not return a WebSocket URL';
+      } catch (e) {
+        lastError = e.message;
+      }
+    }
+
+    await new Promise(r => setTimeout(r, 400));
   }
-  throw new Error(`Chrome Debugger ไม่ตอบสนองที่พอร์ต ${port}`);
+
+  const stderr = browserProc.stderrOutput.trim();
+  throw new Error(`Chrome Debugger did not become available after ${maxAttempts} attempts (${lastError})${stderr ? `. Browser output: ${stderr}` : ''}`);
 }
 
 // ตรวจสอบว่า Token ยังใช้งานได้หรือไม่ (exp date)
@@ -278,18 +330,20 @@ function saveCachedToken(token) {
  * @returns {Promise<string>} Bearer token ใหม่
  */
 async function fetchChatconeToken(username, password) {
-  const email = (username || process.env.CHATCONE_USERNAME || 'it@sevenfive.co.th').trim();
-  const pwd = (password || process.env.CHATCONE_PASSWORD || 'Pass@7575.').trim();
+  const email = String(username || process.env.CHATCONE_USERNAME || '').trim();
+  const pwd = String(password || process.env.CHATCONE_PASSWORD || '').trim();
+  if (!email || !pwd) {
+    throw new Error('Missing CHATCONE_USERNAME or CHATCONE_PASSWORD. Set them in .env or the process environment.');
+  }
 
   const maskedEmail = email.replace(/(.{2})(.*)(@.*)/, '$1***$3');
   console.log(`🤖 กำลังเชื่อมต่อเข้าสู่ระบบ Chatcone แบบอัตโนมัติ (${maskedEmail})...`);
 
   const browserPath = getBrowserPath();
-  const port = 9333 + Math.floor(Math.random() * 500);
   const tempProfile = path.join(os.tmpdir(), `chatcone_auth_${Date.now()}`);
 
   const browserProc = spawn(browserPath, [
-    `--remote-debugging-port=${port}`,
+    '--remote-debugging-port=0',
     '--headless=new',
     '--window-size=1920,1080',
     '--start-maximized',
@@ -303,13 +357,20 @@ async function fetchChatconeToken(username, password) {
     '--disable-blink-features=AutomationControlled',
     'about:blank'
   ]);
+  browserProc.launchError = null;
+  browserProc.stderrOutput = '';
+  browserProc.on('error', err => { browserProc.launchError = err.message; });
+  browserProc.on('exit', (code, signal) => { browserProc.signalCode = signal; });
+  browserProc.stderr.on('data', chunk => {
+    browserProc.stderrOutput = (browserProc.stderrOutput + chunk.toString()).slice(-4000);
+  });
 
   let targetWs = null;
   let browserWs = null;
 
   try {
-    const wsUrl = await getWsDebuggerUrl(port);
-    browserWs = new WebSocketClient(wsUrl);
+    const debuggerInfo = await getWsDebuggerInfo(tempProfile, browserProc);
+    browserWs = new WebSocketClient(debuggerInfo.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => {
       browserWs.onopen = resolve;
       browserWs.onerror = reject;
@@ -334,7 +395,7 @@ async function fetchChatconeToken(username, password) {
 
     // สร้าง Page Target สำหรับ Login
     const target = await sendBrowser('Target.createTarget', { url: 'https://portal.chatcone.com/' });
-    targetWs = new WebSocketClient(`ws://127.0.0.1:${port}/devtools/page/${target.targetId}`);
+    targetWs = new WebSocketClient(`ws://127.0.0.1:${debuggerInfo.port}/devtools/page/${target.targetId}`);
     await new Promise((resolve, reject) => {
       targetWs.onopen = resolve;
       targetWs.onerror = reject;
