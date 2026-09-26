@@ -363,9 +363,7 @@ function doPost(e) {
           sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
         }
       }
-      if (!sheet || sheet.getLastColumn() < 16) {
-        sheet = initializeSheet(ss);
-      }
+      sheet = initializeSheet(ss);
     } else if (!sheet) {
       sheet = initializeSheet(ss);
     } else {
@@ -456,8 +454,8 @@ function doGet(e) {
   return createJsonResponse({
     status: "ok",
     service: "Chatcone to Google Sheets Webhook Sync",
-    version: "1.2.0",
-    features: ["chat_logging", "response_time_tracking", "pdf_quotation_ocr", "sync_summary_logs"],
+    version: "1.3.0",
+    features: ["chat_logging", "response_time_tracking", "pdf_quotation_ocr", "sync_summary_logs", "account_column"],
     server_time: Utilities.formatDate(new Date(), TIMEZONE, DATE_FORMAT),
     instructions: "This endpoint receives POST requests from Chatcone Webhook."
   }, 200);

@@ -252,18 +252,23 @@ async function run() {
   console.log('🔄 โหมดล้างตารางและเขียนใหม่ทุกครั้ง (Auto Clear & Fresh Sync):');
   console.log('📅 ดึงข้อมูล 2 วันล่าสุด และสร้างตาราง 16 คอลัมน์ใหม่อัตโนมัติในทุกรอบ');
 
-  // ตรวจสอบเวอร์ชันของ Google Apps Script Webhook
+  // Do not clear the sheet unless the configured webhook supports the Account column.
+  let healthRes;
   try {
-    const healthRes = await fetch(GOOGLE_WEBHOOK_URL).then(r => r.json()).catch(() => null);
-    if (healthRes && healthRes.version) {
-      console.log(`📡 เวอร์ชัน Webhook ปัจจุบัน: ${healthRes.version}`);
-      if (healthRes.version === '1.0.0') {
-        console.warn('\n⚠️ [คำเตือนสำคัญมาก] Webhook บน Google Apps Script ยังคงรันอยู่ที่เวอร์ชัน 1.0.0 (15 คอลัมน์)');
-        console.warn('   👉 ทำให้ข้อมูลที่ส่งไปถูกเลื่อนคอลัมน์ (เช่น LINE OA ไปตกในช่อง Account)');
-        console.warn('   👉 วิธีแก้: ไปที่ Google Sheet > Extensions > Apps Script > Deploy > Manage deployments > Edit > New version > Deploy\n');
-      }
-    }
-  } catch (e) {}
+    const response = await fetch(GOOGLE_WEBHOOK_URL);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    healthRes = await response.json();
+  } catch (error) {
+    throw new Error(`Cannot verify Google Apps Script webhook at GOOGLE_WEBHOOK_URL: ${error.message}`);
+  }
+
+  const webhookVersion = String(healthRes && healthRes.version || '');
+  const webhookFeatures = Array.isArray(healthRes && healthRes.features) ? healthRes.features : [];
+  const supportsAccountColumn = webhookFeatures.includes('account_column');
+  if (!supportsAccountColumn) {
+    throw new Error(`Google Apps Script webhook version ${webhookVersion || '(unknown)'} does not report account_column support. Deploy the updated ChatconeSync.gs as a new Web App version, verify its URL, update the GOOGLE_WEBHOOK_URL GitHub secret, then rerun the workflow.`);
+  }
+  console.log(`📡 เวอร์ชัน Webhook ปัจจุบัน: ${webhookVersion}`);
 
   const syncedIds = new Set();
   saveSyncedIds(new Set());
