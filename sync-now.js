@@ -178,6 +178,14 @@ function formatThaiTime(timestamp) {
 }
 
 // กำหนดจำนวนวันย้อนหลัง: 3 วันล่าสุด (ครอบคลุมทั้ง SevenfiveOfficial และ Sevenfive Distributor)
+function getAccountType(account, channel) {
+  const normalizedChannel = String(channel || '').toLowerCase();
+  if (account === 'SevenfiveOfficial' && (normalizedChannel === 'line oa' || normalizedChannel === 'line')) return 'Official Account';
+  if (account === 'SevenfiveOfficial' && (normalizedChannel === 'facebook messenger' || normalizedChannel === 'facebook')) return 'เพจค้าส่ง';
+  if (account === 'Sevenfive Distributor' && (normalizedChannel === 'facebook messenger' || normalizedChannel === 'facebook')) return 'เพจหลัก';
+  return '';
+}
+
 const customDaysArg = process.argv.find(arg => arg.startsWith('--days='));
 const SYNC_DAYS = customDaysArg ? parseInt(customDaysArg.split('=')[1], 10) : 3;
 
@@ -503,6 +511,7 @@ async function run() {
             allNewEvents.push({
               timestamp: timeFormatted,
               account: account.name,
+              account_type: getAccountType(account.name, channelDisplayName),
               company_id: account.company_id,
               channel_id: channel.id,
               slug: account.slug,

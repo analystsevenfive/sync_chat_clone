@@ -83,6 +83,14 @@ const DISTRIBUTOR_KNOWN_NAMES = [
  * 5. ตรวจจาก Slug หรือ Referer URL
  * 6. ค่าเดิม (Fallback)
  */
+function getAccountType(account, channel) {
+  var normalizedChannel = String(channel || "").toLowerCase();
+  if (account === "SevenfiveOfficial" && (normalizedChannel === "line oa" || normalizedChannel === "line")) return "Official Account";
+  if (account === "SevenfiveOfficial" && (normalizedChannel === "facebook messenger" || normalizedChannel === "facebook")) return "เพจค้าส่ง";
+  if (account === "Sevenfive Distributor" && (normalizedChannel === "facebook messenger" || normalizedChannel === "facebook")) return "เพจหลัก";
+  return "";
+}
+
 function resolveAccountName(item, payload, e, fallbackValue) {
   // 1. ถ้ามี URL query parameter เช่น ?account=SevenfiveOfficial
   if (e && e.parameter && e.parameter.account) {
@@ -370,6 +378,8 @@ function doPost(e) {
       ensureAccountColumn(sheet);
       // ตรวจสอบว่าคอลัมน์หัวตารางเป็นเวอร์ชันล่าสุด 16 คอลัมน์หรือยัง
       const headers = getStandardHeaders();
+      headers.splice(2, 0, "Account Type");
+      headers.splice(15, 1);
       if (sheet.getLastColumn() < headers.length) {
         sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
         sheet.setColumnWidth(2, 170); // Account
@@ -389,8 +399,8 @@ function doPost(e) {
       
       // จัดรูปแบบชิดซ้าย/กลาง และฟอร์แมตตัวเลข
       sheet.getRange(lastRow + 1, 1, parsedRows.length, 1).setNumberFormat("@"); // Timestamp เป็น text หรือ date
-      if (parsedRows[0].length >= 16) {
-        sheet.getRange(lastRow + 1, 16, parsedRows.length, 1).setNumberFormat("#,##0.00"); // Grand Total เป็นตัวเลขเงิน
+      if (parsedRows[0].length >= 17) {
+        sheet.getRange(lastRow + 1, 17, parsedRows.length, 1).setNumberFormat("#,##0.00"); // Grand Total เป็นตัวเลขเงิน
       }
 
       // นับแยกบัญชีเพื่อบันทึกประวัติลงใน Sync_Logs
@@ -688,6 +698,7 @@ function parseChatconePayload(payload, rawContent, e) {
 
     // 3. Channel / Platform (LINE, Facebook, IG, Webchat)
     const channel = item.channel || item.platform || item.source || (item.channel_type ? item.channel_type : "Chatcone");
+    const accountType = item.account_type || getAccountType(account, channel);
 
     // 4. Sender Type (Customer หรือ Agent / Bot)
     let senderType = "Customer";
@@ -871,8 +882,9 @@ function parseChatconePayload(payload, rawContent, e) {
 
     rows.push([
       timestamp,              // Col A: Timestamp
-      account,                // Col B: Account (NEW!)
-      channel,                // Col C: Channel
+      account,                // Col B: Account
+      accountType,            // Col C: Account Type
+      channel,                // Col D: Channel
       senderType,             // Col D: Sender Type
       senderName,             // Col E: Sender Name
       String(userId),         // Col F: User / Customer ID
@@ -910,6 +922,7 @@ function getStandardHeaders() {
     "Media URL (ลิงก์ไฟล์/รูป)",
     "Conversation ID",
     "Message ID",
+    "Account Type",
     "Raw JSON Data",
     "Quotation No. (เลขที่ใบเสนอราคา)",
     "Grand Total (ยอดรวมทั้งสิ้น)"
@@ -926,6 +939,9 @@ function initializeSheet(ss) {
   }
 
   const headers = getStandardHeaders();
+  // Keep Account Type immediately after Account (column C).
+  headers.splice(2, 0, "Account Type");
+  headers.splice(15, 1); // remove the temporary compatibility slot near Raw JSON
 
   // เขียน Header
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
@@ -947,8 +963,9 @@ function initializeSheet(ss) {
   // กำหนดความกว้างคอลัมน์ให้อ่านง่าย
   sheet.setColumnWidth(1, 160); // Col A: Timestamp
   sheet.setColumnWidth(2, 170); // Col B: Account
-  sheet.setColumnWidth(3, 120); // Col C: Channel
-  sheet.setColumnWidth(4, 110); // Col D: Sender Type
+  sheet.setColumnWidth(3, 150); // Col C: Account Type
+  sheet.setColumnWidth(4, 120); // Col D: Channel
+  sheet.setColumnWidth(5, 110); // Col E: Sender Type
   sheet.setColumnWidth(5, 150); // Col E: Sender Name
   sheet.setColumnWidth(6, 140); // Col F: Customer ID
   sheet.setColumnWidth(7, 110); // Col G: Message Type
@@ -1364,6 +1381,7 @@ function fixAndCleanColumns() {
     newRows.push([
       timestamp,
       account,
+      getAccountType(account, channel),
       channel,
       senderType,
       senderName,
@@ -1391,7 +1409,7 @@ function fixAndCleanColumns() {
   if (newRows.length > 0) {
     sheet.getRange(2, 1, newRows.length, newRows[0].length).setValues(newRows);
     sheet.getRange(2, 1, newRows.length, 1).setNumberFormat("@");
-    sheet.getRange(2, 16, newRows.length, 1).setNumberFormat("#,##0.00");
+    sheet.getRange(2, 17, newRows.length, 1).setNumberFormat("#,##0.00");
 
     for (let r = 0; r < newRows.length; r++) {
       if (newRows[r][1] === "SevenfiveOfficial") {
