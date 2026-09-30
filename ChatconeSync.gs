@@ -85,7 +85,7 @@ const DISTRIBUTOR_KNOWN_NAMES = [
  */
 function getAccountType(account, channel) {
   var normalizedChannel = String(channel || "").toLowerCase();
-  if (account === "SevenfiveOfficial" && (normalizedChannel === "line oa" || normalizedChannel === "line")) return "Official Account";
+  if (account === "SevenfiveOfficial" && (normalizedChannel === "line oa" || normalizedChannel === "line")) return "Sevenfive (ฝ่ายขาย)";
   if (account === "SevenfiveOfficial" && (normalizedChannel === "facebook messenger" || normalizedChannel === "facebook")) return "เพจค้าส่ง";
   if (account === "Sevenfive Distributor" && (normalizedChannel === "facebook messenger" || normalizedChannel === "facebook")) return "เพจหลัก";
   return "";

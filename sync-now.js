@@ -180,7 +180,7 @@ function formatThaiTime(timestamp) {
 // กำหนดจำนวนวันย้อนหลัง: 3 วันล่าสุด (ครอบคลุมทั้ง SevenfiveOfficial และ Sevenfive Distributor)
 function getAccountType(account, channel) {
   const normalizedChannel = String(channel || '').toLowerCase();
-  if (account === 'SevenfiveOfficial' && (normalizedChannel === 'line oa' || normalizedChannel === 'line')) return 'Official Account';
+  if (account === 'SevenfiveOfficial' && (normalizedChannel === 'line oa' || normalizedChannel === 'line')) return 'Sevenfive (ฝ่ายขาย)';
   if (account === 'SevenfiveOfficial' && (normalizedChannel === 'facebook messenger' || normalizedChannel === 'facebook')) return 'เพจค้าส่ง';
   if (account === 'Sevenfive Distributor' && (normalizedChannel === 'facebook messenger' || normalizedChannel === 'facebook')) return 'เพจหลัก';
   return '';
