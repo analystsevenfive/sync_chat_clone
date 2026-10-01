@@ -80,7 +80,7 @@ function executeHttpRequest(accountConfig, channelId, reqPath, method, body, tok
       options.headers['Content-Length'] = Buffer.byteLength(postData);
     }
 
-    options.timeout = 10000;
+    options.timeout = 20000;
 
     const req = https.request(options, (res) => {
       let data = '';
@@ -105,8 +105,16 @@ function executeHttpRequest(accountConfig, channelId, reqPath, method, body, tok
   });
 }
 
-async function chatconeRequest(accountConfig, channelId, reqPath, method, body, retryOn401 = true) {
+async function chatconeRequest(accountConfig, channelId, reqPath, method, body, retryOn401 = true, retries = 3) {
   let res = await executeHttpRequest(accountConfig, channelId, reqPath, method, body, TOKEN);
+
+  // Chatcone API บางครั้งตอบช้า/timeout ชั่วคราว ลองใหม่แบบ exponential backoff ก่อนยอมแพ้
+  for (let attempt = 1; attempt <= retries && (res.status === 408 || res.status >= 500); attempt++) {
+    const waitMs = attempt * 2000;
+    console.log(`   ⚠️ ${reqPath} ตอบกลับ HTTP ${res.status} (${res.error || 'server error'}) กำลังลองใหม่รอบที่ ${attempt}/${retries} หลังรอ ${waitMs / 1000} วินาที...`);
+    await new Promise(r => setTimeout(r, waitMs));
+    res = await executeHttpRequest(accountConfig, channelId, reqPath, method, body, TOKEN);
+  }
 
   // ตรวจจับ 401 Unauthorized และทำการ Auto-Refresh Token อัตโนมัติ
   if (res.status === 401 && retryOn401) {
