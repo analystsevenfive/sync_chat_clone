@@ -196,47 +196,102 @@ function ensureAccountColumn(sheet) {
   if (!/^Channel\b/i.test(String(headers[1] || "")) ||
       !/^Sender Type\b/i.test(String(headers[2] || ""))) return false;
 
-  const rawIndex = headers.findIndex(header => /Raw JSON/i.test(String(header)));
-  const messageIdIndex = headers.findIndex(header => /Message ID/i.test(String(header)));
-  const senderNameIndex = headers.findIndex(header => /Sender Name/i.test(String(header)));
-  const channelIndex = headers.findIndex(header => /^Channel\b/i.test(String(header)));
   const oldRows = lastRow > 1
     ? sheet.getRange(2, 1, lastRow - 1, lastColumn).getValues()
     : [];
 
-  sheet.insertColumnBefore(2);
+  const normalizedRows = oldRows.map(row => {
+    const normalized = normalizeChatLogRow(row, headers);
+    let payload = null;
+    let item = null;
+    if (normalized[14]) {
+      try {
+        payload = JSON.parse(String(normalized[14]));
+        const events = Array.isArray(payload)
+          ? payload
+          : (payload && Array.isArray(payload.events) ? payload.events : [payload]);
+        item = events.find(event => String(event.message_id || event.msg_id || event.id || "") === String(normalized[13])) || events[0];
+      } catch (e) {}
+    }
+    if (!item) item = { channel: normalized[3], sender_name: normalized[5], customer_id: normalized[6] };
+    normalized[1] = resolveAccountName(item, payload, null, "Sevenfive Distributor");
+    normalized[2] = getAccountType(normalized[1], normalized[3]);
+    return normalized;
+  });
+
+  sheet.clear();
   initializeSheet(SpreadsheetApp.getActiveSpreadsheet());
-
-  if (oldRows.length > 0) {
-    const accounts = oldRows.map(row => {
-      if (!row.some(value => value !== "" && value !== null)) return [""];
-
-      const rawJson = rawIndex >= 0 ? String(row[rawIndex] || "") : "";
-      const messageId = messageIdIndex >= 0 ? String(row[messageIdIndex] || "") : "";
-      let payload = null;
-      let item = null;
-      if (rawJson) {
-        try {
-          payload = JSON.parse(rawJson);
-          const events = Array.isArray(payload)
-            ? payload
-            : (payload && Array.isArray(payload.events) ? payload.events : [payload]);
-          item = events.find(event => messageId && String(event.message_id || event.msg_id || event.id || "") === messageId) || events[0];
-        } catch (e) {}
-      }
-
-      if (!item) {
-        item = {
-          sender_name: senderNameIndex >= 0 ? row[senderNameIndex] : "",
-          channel: channelIndex >= 0 ? row[channelIndex] : ""
-        };
-      }
-      return [resolveAccountName(item, payload, null, "Sevenfive Distributor")];
-    });
-    sheet.getRange(2, 2, accounts.length, 1).setValues(accounts);
+  if (normalizedRows.length) {
+    sheet.getRange(2, 1, normalizedRows.length, getCurrentHeaders().length).setValues(normalizedRows);
+    sheet.getRange(2, 1, normalizedRows.length, 1).setNumberFormat("@");
+    sheet.getRange(2, 17, normalizedRows.length, 1).setNumberFormat("#,##0.00");
   }
 
   return true;
+}
+
+function getCurrentHeaders() {
+  return [
+    "Timestamp (วัน-เวลา)", "Account (บัญชี)", "Account Type", "Channel (ช่องทาง)",
+    "Sender Type (ประเภทผู้ส่ง)", "Sender Name (ชื่อผู้ส่ง)", "Customer ID (รหัสลูกค้า)",
+    "Message Type (ประเภทข้อความ)", "Message Content (เนื้อหาข้อความ)", "Response Time (วินาที)",
+    "Response Time (อ่านง่าย)", "Media URL (ลิงก์ไฟล์/รูป)", "Conversation ID", "Message ID",
+    "Raw JSON Data", "Quotation No. (เลขที่ใบเสนอราคา)", "Grand Total (ยอดรวมทั้งสิ้น)"
+  ];
+}
+
+function getHeaderIndex(headers, pattern, occurrence) {
+  let found = -1;
+  let seen = 0;
+  for (let i = 0; i < headers.length; i++) {
+    if (!pattern.test(String(headers[i] || ""))) continue;
+    if (seen === (occurrence || 0)) return i;
+    seen++;
+  }
+  return found;
+}
+
+function getLegacyRowValue(row, headers, headerPattern, fallbackIndex) {
+  const index = getHeaderIndex(headers, headerPattern);
+  return index >= 0 ? row[index] : row[fallbackIndex];
+}
+
+function normalizeChatLogRow(row, headers) {
+  const offset = getHeaderIndex(headers, /^Account Type\b/i) >= 0 ? 1 : 0;
+  const accountIndex = getHeaderIndex(headers, /^Account\b/i);
+  const account = String(accountIndex >= 0 ? row[accountIndex] || "" : "");
+  const channel = String(getLegacyRowValue(row, headers, /^Channel\b/i, 2 + offset) || "");
+  const timestamp = getLegacyRowValue(row, headers, /^Timestamp\b/i, 0) || "";
+  const senderType = getLegacyRowValue(row, headers, /^Sender Type\b/i, 3 + offset) || "";
+  const senderName = getLegacyRowValue(row, headers, /^Sender Name\b/i, 4 + offset) || "";
+  const customerId = getLegacyRowValue(row, headers, /^(Customer ID|User ID)\b/i, 5 + offset) || "";
+  const messageType = getLegacyRowValue(row, headers, /^Message Type\b/i, 6 + offset) || "";
+  const messageContent = getLegacyRowValue(row, headers, /^Message Content\b/i, 7 + offset) || "";
+  const responseTimeHeaders = headers.reduce((indices, header, index) => {
+    if (/^Response Time\b/i.test(String(header || ""))) indices.push(index);
+    return indices;
+  }, []);
+  const responseTimeSec = row[responseTimeHeaders[0] !== undefined ? responseTimeHeaders[0] : 8 + offset] || "";
+  const responseTimeFormatted = row[responseTimeHeaders[1] !== undefined ? responseTimeHeaders[1] : 9 + offset] || "-";
+  const mediaUrl = getLegacyRowValue(row, headers, /^Media URL\b/i, 10 + offset) || "";
+  const conversationId = getLegacyRowValue(row, headers, /^Conversation ID\b/i, 11 + offset) || "-";
+  const messageId = getLegacyRowValue(row, headers, /^Message ID\b/i, 12 + offset) || "-";
+  const rawJson = getLegacyRowValue(row, headers, /^Raw JSON\b/i, 13 + offset) || "";
+  let quotationNo = getLegacyRowValue(row, headers, /^Quotation No\b/i, 14 + offset) || "";
+  const grandTotal = getLegacyRowValue(row, headers, /^Grand Total\b/i, 15 + offset);
+
+  if (quotationNo && !isValidQuotationNo(String(quotationNo))) {
+    quotationNo = extractQuotationNo(String(quotationNo));
+  }
+
+  return [
+    timestamp, account, getAccountType(account, channel), channel, senderType, senderName,
+    customerId, messageType, String(messageContent), responseTimeSec, responseTimeFormatted,
+    mediaUrl, conversationId, messageId, rawJson, quotationNo,
+    grandTotal === "" || grandTotal === null || grandTotal === undefined
+      ? ""
+      : Number(String(grandTotal).replace(/,/g, ""))
+  ];
 }
 
 /**
@@ -320,7 +375,9 @@ function doPost(e) {
       const existingIds = [];
       if (sheet && sheet.getLastRow() > 1) {
         const lastCol = sheet.getLastColumn();
-        const idColIndex = lastCol >= 16 ? 13 : 12; // คอลัมน์ M (13) สำหรับ 16 คอลัมน์, คอลัมน์ L (12) สำหรับ 15 คอลัมน์
+        const headers = sheet.getRange(1, 1, 1, lastCol).getDisplayValues()[0];
+        const detectedIdIndex = getHeaderIndex(headers, /^Message ID\b/i);
+        const idColIndex = detectedIdIndex >= 0 ? detectedIdIndex + 1 : (lastCol >= 16 ? 13 : 12);
         const idVals = sheet.getRange(2, idColIndex, sheet.getLastRow() - 1, 1).getValues();
         for (let r = 0; r < idVals.length; r++) {
           const val = String(idVals[r][0] || "").trim();
@@ -376,16 +433,21 @@ function doPost(e) {
       sheet = initializeSheet(ss);
     } else {
       ensureAccountColumn(sheet);
-      // ตรวจสอบว่าคอลัมน์หัวตารางเป็นเวอร์ชันล่าสุด 16 คอลัมน์หรือยัง
-      const headers = getStandardHeaders();
-      headers.splice(2, 0, "Account Type");
-      headers.splice(15, 1);
-      if (sheet.getLastColumn() < headers.length) {
-        sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-        sheet.setColumnWidth(2, 170); // Account
-        sheet.setColumnWidth(15, 160); // Quotation No.
-        sheet.setColumnWidth(16, 150); // Grand Total
-        sheet.getRange("P:P").setNumberFormat("#,##0.00");
+      const currentHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getDisplayValues()[0];
+      const expectedHeaders = getCurrentHeaders();
+      const hasExpectedSchema = expectedHeaders.every((header, index) => currentHeaders[index] === header);
+      if (!hasExpectedSchema) {
+        const lastRow = sheet.getLastRow();
+        const existingRows = lastRow > 1
+          ? sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues()
+          : [];
+        const normalizedRows = existingRows.map(row => normalizeChatLogRow(row, currentHeaders));
+        initializeSheet(ss);
+        if (normalizedRows.length) {
+          sheet.getRange(2, 1, normalizedRows.length, expectedHeaders.length).setValues(normalizedRows);
+          sheet.getRange(2, 1, normalizedRows.length, 1).setNumberFormat("@");
+          sheet.getRange(2, 17, normalizedRows.length, 1).setNumberFormat("#,##0.00");
+        }
       }
     }
 
@@ -908,25 +970,7 @@ function parseChatconePayload(payload, rawContent, e) {
  * หัวคอลัมน์มาตรฐาน 16 คอลัมน์ (รองรับ 2 บัญชี: Sevenfive Distributor, SevenfiveOfficial)
  */
 function getStandardHeaders() {
-  return [
-    "Timestamp (วัน-เวลา)",
-    "Account (บัญชี)",
-    "Channel (ช่องทาง)",
-    "Sender Type (ประเภทผู้ส่ง)",
-    "Sender Name (ชื่อผู้ส่ง)",
-    "Customer ID (รหัสลูกค้า)",
-    "Message Type (ประเภทข้อความ)",
-    "Message Content (เนื้อหาข้อความ)",
-    "Response Time (วินาที)",
-    "Response Time (อ่านง่าย)",
-    "Media URL (ลิงก์ไฟล์/รูป)",
-    "Conversation ID",
-    "Message ID",
-    "Account Type",
-    "Raw JSON Data",
-    "Quotation No. (เลขที่ใบเสนอราคา)",
-    "Grand Total (ยอดรวมทั้งสิ้น)"
-  ];
+  return getCurrentHeaders();
 }
 
 /**
@@ -938,10 +982,7 @@ function initializeSheet(ss) {
     sheet = ss.insertSheet(SHEET_NAME);
   }
 
-  const headers = getStandardHeaders();
-  // Keep Account Type immediately after Account (column C).
-  headers.splice(2, 0, "Account Type");
-  headers.splice(15, 1); // remove the temporary compatibility slot near Raw JSON
+  const headers = getCurrentHeaders();
 
   // เขียน Header
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
@@ -966,28 +1007,28 @@ function initializeSheet(ss) {
   sheet.setColumnWidth(3, 150); // Col C: Account Type
   sheet.setColumnWidth(4, 120); // Col D: Channel
   sheet.setColumnWidth(5, 110); // Col E: Sender Type
-  sheet.setColumnWidth(5, 150); // Col E: Sender Name
-  sheet.setColumnWidth(6, 140); // Col F: Customer ID
-  sheet.setColumnWidth(7, 110); // Col G: Message Type
-  sheet.setColumnWidth(8, 340); // Col H: Message Content
-  sheet.setColumnWidth(9, 140); // Col I: Response Time (วินาที)
-  sheet.setColumnWidth(10, 160); // Col J: Response Time (อ่านง่าย)
-  sheet.setColumnWidth(11, 200); // Col K: Media URL
-  sheet.setColumnWidth(12, 130); // Col L: Conversation ID
-  sheet.setColumnWidth(13, 130); // Col M: Message ID
-  sheet.setColumnWidth(14, 150); // Col N: Raw JSON
-  sheet.setColumnWidth(15, 160); // Col O: Quotation No.
-  sheet.setColumnWidth(16, 150); // Col P: Grand Total
+  sheet.setColumnWidth(6, 150); // Col F: Sender Name
+  sheet.setColumnWidth(7, 140); // Col G: Customer ID
+  sheet.setColumnWidth(8, 110); // Col H: Message Type
+  sheet.setColumnWidth(9, 340); // Col I: Message Content
+  sheet.setColumnWidth(10, 140); // Col J: Response Time (วินาที)
+  sheet.setColumnWidth(11, 160); // Col K: Response Time (อ่านง่าย)
+  sheet.setColumnWidth(12, 200); // Col L: Media URL
+  sheet.setColumnWidth(13, 130); // Col M: Conversation ID
+  sheet.setColumnWidth(14, 130); // Col N: Message ID
+  sheet.setColumnWidth(15, 250); // Col O: Raw JSON
+  sheet.setColumnWidth(16, 160); // Col P: Quotation No.
+  sheet.setColumnWidth(17, 150); // Col Q: Grand Total
 
   // จัดกึ่งกลางสำหรับคอลัมน์ตัวเลข Response Time และ Quotation No.
-  sheet.getRange("I:J").setHorizontalAlignment("center");
-  sheet.getRange("O:O").setHorizontalAlignment("center");
+  sheet.getRange("J:K").setHorizontalAlignment("center");
+  sheet.getRange("P:P").setHorizontalAlignment("center");
 
   // จัดชิดขวาและฟอร์แมตตัวเลขเงินสำหรับ Grand Total
-  sheet.getRange("P:P").setHorizontalAlignment("right").setNumberFormat("#,##0.00");
+  sheet.getRange("Q:Q").setHorizontalAlignment("right").setNumberFormat("#,##0.00");
 
   // เปิดใช้ Text Wrap สำหรับ Message Content
-  sheet.getRange("H:H").setWrap(true);
+  sheet.getRange("I:I").setWrap(true);
 
   return sheet;
 }
@@ -1141,95 +1182,21 @@ function fixAndCleanColumns() {
 
   // ดึงข้อมูลเดิมทั้งหมดในชีต
   const allValues = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  const sourceHeaders = sheet.getRange(1, 1, 1, lastCol).getDisplayValues()[0];
   const newRows = [];
 
   for (let i = 0; i < allValues.length; i++) {
     const row = allValues[i];
-    const timestamp = row[0];
-
     // กรองเฉพาะข้อความ 2 วันล่าสุด (เมื่อวานและวันนี้)
-    if (FILTER_LAST_DAYS > 0 && !isWithinSyncWindow(timestamp)) {
+    if (FILTER_LAST_DAYS > 0 && !isWithinSyncWindow(row[0])) {
       continue;
     }
 
-    let account = "";
-    let channel = "";
-    let senderType = "";
-    let senderName = "";
-    let customerId = "";
-    let messageType = "";
-    let messageContent = "";
-    let responseTimeSec = "";
-    let responseTimeFormatted = "-";
-    let mediaUrl = "";
-    let conversationId = "-";
-    let messageId = "-";
-    let rawJson = "";
-    let quotationNo = "";
-    let grandTotal = "";
-
-    // ตรวจสอบว่าแถวนี้เป็นแถวจากโครงสร้างเก่า (15 คอลัมน์) ที่ยังไม่ได้เลื่อนคอลัมน์ Account หรือไม่
-    const isShiftedFromOld = (
-      row[2] === "Customer" || row[2] === "Agent" || row[2] === "Bot" || row[2] === "System" ||
-      row[1] === "Chatcone" ||
-      (row[1] !== "Sevenfive Distributor" && row[1] !== "SevenfiveOfficial" && (row[1] === "LINE OA" || row[1] === "Facebook Messenger" || row[1] === "Webchat"))
-    );
-
-    if (lastCol >= 16 && !isShiftedFromOld) {
-      // ตารางเวอร์ชัน 16 คอลัมน์อยู่แล้ว
-      account = row[1] || "";
-      channel = row[2] || "";
-      senderType = row[3] || "";
-      senderName = row[4] || "";
-      customerId = row[5] || "";
-      messageType = row[6] || "";
-      messageContent = String(row[7] || "");
-      if (typeof row[8] === "number" || (typeof row[8] === "string" && /^\d+$/.test(row[8]))) {
-        responseTimeSec = Number(row[8]);
-      }
-      responseTimeFormatted = row[9] || responseTimeFormatted;
-      mediaUrl = row[10] || "";
-      conversationId = row[11] || "-";
-      messageId = row[12] || "-";
-      rawJson = row[13] || "";
-      quotationNo = row[14] || "";
-      if (quotationNo && !isValidQuotationNo(quotationNo)) quotationNo = extractQuotationNo(quotationNo);
-      grandTotal = row[15] !== "" ? Number(row[15]) : "";
-    } else {
-      // ตารางเวอร์ชันเก่า (11, 13 หรือ 15 คอลัมน์ หรือแถวที่เลื่อนเพราะไม่มีคอลัมน์ Account)
-      channel = row[1] || "";
-      senderType = row[2] || "";
-      senderName = row[3] || "";
-      customerId = row[4] || "";
-      messageType = row[5] || "";
-      messageContent = String(row[6] || "");
-
-      if (lastCol <= 11) {
-        mediaUrl = row[7] || "";
-        conversationId = row[8] || "-";
-        messageId = row[9] || "-";
-        rawJson = row[10] || "";
-      } else {
-        if (typeof row[7] === "number" || (typeof row[7] === "string" && /^\d+$/.test(row[7]))) {
-          responseTimeSec = Number(row[7]);
-          responseTimeFormatted = row[8] || responseTimeFormatted;
-          mediaUrl = row[9] || "";
-          conversationId = row[10] || "-";
-          messageId = row[11] || "-";
-          rawJson = row[12] || "";
-          if (lastCol >= 14) {
-            quotationNo = row[13] || "";
-            if (quotationNo && !isValidQuotationNo(quotationNo)) quotationNo = extractQuotationNo(quotationNo);
-          }
-          if (lastCol >= 15) grandTotal = row[14] !== "" ? Number(row[14]) : "";
-        } else {
-          mediaUrl = row[7] || "";
-          conversationId = row[8] || "-";
-          messageId = row[9] || "-";
-          rawJson = row[10] || "";
-        }
-      }
-    }
+    const normalizedRow = normalizeChatLogRow(row, sourceHeaders);
+    let [timestampValue, account, , channel, senderType, senderName, customerId,
+      messageType, messageContent, responseTimeSec, responseTimeFormatted, mediaUrl,
+      conversationId, messageId, rawJson, quotationNo, grandTotal] = normalizedRow;
+    const timestamp = timestampValue;
 
     // ดึงตัวเลขเวลาตอบจากข้อความเดิม เช่น [⏱️ ใช้เวลาตอบ: 209 วินาที] หากยังไม่มี
     if (responseTimeSec === "") {
@@ -1320,6 +1287,7 @@ function fixAndCleanColumns() {
     } else if (!account || account === "Chatcone") {
       account = "Sevenfive Distributor";
     }
+    const accountType = getAccountType(account, channel);
 
     // 2. ตรวจสอบไฟล์แนบ / Flex Message / ใบเสนอราคา จาก Raw JSON หรือข้อความเดิม
     if (rawJson && typeof rawJson === "string") {
@@ -1399,7 +1367,7 @@ function fixAndCleanColumns() {
     ]);
   }
 
-  // ล้างชีตเดิมแล้วเขียนหัวตาราง 16 คอลัมน์ใหม่
+  // Rebuild the sheet using the canonical 17-column schema.
   sheet.clear();
   initializeSheet(ss);
 
