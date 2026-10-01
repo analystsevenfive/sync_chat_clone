@@ -14,7 +14,6 @@ const ACCOUNTS = [
     company_id: '68819f44dd184b85876ac383',
     slug: 'x0Wteloe',
     referer: 'https://portal.chatcone.com/x0Wteloe/chat',
-    channel_lists: JSON.stringify(["68819f44dd184bb7f86ac384","68844b588be8b73f96d987f3","6881b04f2d07422b089ec4c8"]),
     channels: [
       { id: '6881b04f2d07422b089ec4c8', name: 'LINE OA' },
       { id: '68819f44dd184bb7f86ac384', name: 'Facebook Messenger' },
@@ -26,7 +25,6 @@ const ACCOUNTS = [
     company_id: '68819f3edd184b81dc6ac35e',
     slug: 'G6zVti0a',
     referer: 'https://portal.chatcone.com/G6zVti0a/chat',
-    channel_lists: JSON.stringify(["68819f3edd184bf5276ac35f","6881c67ddd184b54a06b025c"]),
     channels: [
       { id: '6881c67ddd184b54a06b025c', name: 'Facebook Messenger' },
       { id: '68819f3edd184bf5276ac35f', name: 'LINE OA' }
@@ -67,7 +65,9 @@ function executeHttpRequest(accountConfig, channelId, reqPath, method, body, tok
         'authorization': `Bearer ${token}`,
         'agent_id': AGENT_ID,
         'channel_id': effectiveChannelId,
-        'channel_lists': accountConfig.channel_lists,
+        // Keep the API's channel scope aligned with channel_id. Sending every
+        // account channel here can make /followers return LINE rooms for FB.
+        'channel_lists': JSON.stringify([effectiveChannelId]),
         'company_id': accountConfig.company_id,
         'content-type': 'application/json;charset=UTF-8',
         'origin': 'https://portal.chatcone.com',
@@ -207,6 +207,20 @@ function getAccountType(account, channel) {
 const customDaysArg = process.argv.find(arg => arg.startsWith('--days='));
 const SYNC_DAYS = customDaysArg ? parseInt(customDaysArg.split('=')[1], 10) : 3;
 
+// จำนวนห้องสนทนาที่ดึงพร้อมกันต่อช่องทาง เพื่อลดเวลารวมของการ Sync (ป้องกัน GitHub Actions timeout)
+const FOLLOWER_CONCURRENCY = parseInt(process.env.FOLLOWER_CONCURRENCY || '8', 10);
+
+async function runWithConcurrency(items, limit, worker) {
+  const queue = items.slice();
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(new Array(workerCount).fill(0).map(async () => {
+    while (queue.length) {
+      const item = queue.shift();
+      await worker(item);
+    }
+  }));
+}
+
 function getSyncStartDate() {
   const now = new Date();
   const options = { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' };
@@ -245,6 +259,22 @@ function getFollowerLastAct(follower) {
   return follower.updated_at || null;
 }
 
+function followerMatchesChannel(follower, channel) {
+  const expectedName = String(channel && channel.name || '').toLowerCase();
+  const expectedPlatform = expectedName.includes('facebook') ? 'facebook'
+    : (expectedName.includes('line') ? 'line' : '');
+  if (!expectedPlatform) return true;
+
+  const actual = String(
+    follower && (follower.channel_type || follower.platform ||
+      (follower.channel && (follower.channel.type || follower.channel.name))) || ''
+  ).toLowerCase();
+  if (!actual) return true;
+  if (/facebook|messenger|^fb$/.test(actual)) return expectedPlatform === 'facebook';
+  if (/^line$|line[_\s-]*oa/.test(actual)) return expectedPlatform === 'line';
+  return true;
+}
+
 /**
  * ฟังก์ชันตรวจสอบและดึงเลขที่ใบเสนอราคา (Quotation No.) ให้ถูกต้องตามรูปแบบ
  * ป้องกันคำที่ไม่ใช่เลขที่เอกสาร เช่น QTEC, QTDACCBDTCN8A, QUOTATION, INVOICE ฯลฯ
@@ -275,8 +305,8 @@ async function run() {
     }
   }
 
-  console.log('🔄 โหมดล้างตารางและเขียนใหม่ทุกครั้ง (Auto Clear & Fresh Sync):');
-  console.log('📅 ดึงข้อมูล 2 วันล่าสุด และสร้างตาราง 16 คอลัมน์ใหม่อัตโนมัติในทุกรอบ');
+  console.log('🔄 โหมดซิงค์แบบ staging: จะสลับข้อมูลบนชีตจริงหลังดึงครบทุกช่องทาง');
+  console.log(`📅 ดึงข้อมูล ${SYNC_DAYS} วันล่าสุด โดยข้อมูลเดิมจะยังอยู่หากรอบนี้ถูกยกเลิก`);
 
   // Do not clear the sheet unless the configured webhook supports the Account column.
   let healthRes;
@@ -291,25 +321,30 @@ async function run() {
   const webhookVersion = String(healthRes && healthRes.version || '');
   const webhookFeatures = Array.isArray(healthRes && healthRes.features) ? healthRes.features : [];
   const supportsAccountColumn = webhookFeatures.includes('account_column');
-  if (!supportsAccountColumn) {
-    throw new Error(`Google Apps Script webhook version ${webhookVersion || '(unknown)'} does not report account_column support. Deploy the updated ChatconeSync.gs as a new Web App version, verify its URL, update the GOOGLE_WEBHOOK_URL GitHub secret, then rerun the workflow.`);
+  const supportsStagedSync = webhookFeatures.includes('staged_sync');
+  if (!supportsAccountColumn || !supportsStagedSync) {
+    throw new Error(`Google Apps Script webhook version ${webhookVersion || '(unknown)'} does not report the required account_column and staged_sync features. Deploy the updated ChatconeSync.gs as a new Web App version, verify its URL, update the GOOGLE_WEBHOOK_URL GitHub secret, then rerun the workflow.`);
   }
   console.log(`📡 เวอร์ชัน Webhook ปัจจุบัน: ${webhookVersion}`);
 
+  const beginRes = await postCustomPayload({ action: 'begin_sync' });
+  let beginBody;
+  try { beginBody = JSON.parse(beginRes.data || '{}'); } catch (e) {}
+  if (beginRes.status < 200 || beginRes.status >= 300 || !beginBody || beginBody.status !== 'success') {
+    throw new Error(`Could not initialize safe sync staging: ${(beginBody && beginBody.message) || beginRes.error || beginRes.data || `HTTP ${beginRes.status}`}`);
+  }
+
   const syncedIds = new Set();
-  saveSyncedIds(new Set());
 
   const allNewEvents = [];
   let totalWritten = 0;
   let officialWritten = 0;
   let distributorWritten = 0;
-  let sheetResetSent = false;
   const chunkSize = 100;
   async function flushPending(force) {
     while (allNewEvents.length >= chunkSize || (force && allNewEvents.length > 0)) {
       const chunk = allNewEvents.splice(0, chunkSize);
-      const action = sheetResetSent ? 'sync' : 'reset_and_sync';
-      const result = await postToGoogleSheets(chunk, action, { skip_log: true });
+      const result = await postToGoogleSheets(chunk, 'stage_sync', { skip_log: true });
       if (result.status < 200 || result.status >= 300) {
         throw new Error(`Google Sheets write failed (HTTP ${result.status}): ${result.error || result.data || 'unknown error'}`);
       }
@@ -318,7 +353,6 @@ async function run() {
       if (!responseBody || responseBody.status !== 'success') {
         throw new Error(`Google Sheets rejected the batch: ${(responseBody && responseBody.message) || result.data || 'invalid response'}`);
       }
-      sheetResetSent = true;
       totalWritten += chunk.length;
       for (const event of chunk) {
         if (event.account === 'SevenfiveOfficial') officialWritten++;
@@ -332,7 +366,7 @@ async function run() {
   for (const account of ACCOUNTS) {
     console.log(`\n===============================================================`);
     console.log(`🏢 กำลังดึงข้อมูลจากบัญชี: 【 ${account.name} 】 (Slug: ${account.slug})`);
-    console.log(`📅 ดึงย้อนหลัง 1 วัน รวมวันนี้: ตั้งแต่ ${formatThaiTime(syncStartTime)} เป็นต้นมา`);
+    console.log(`📅 ดึงย้อนหลัง ${Math.max(0, SYNC_DAYS - 1)} วันรวมวันนี้: ตั้งแต่ ${formatThaiTime(syncStartTime)} เป็นต้นมา`);
     console.log(`===============================================================`);
 
     for (const channel of account.channels) {
@@ -356,9 +390,15 @@ async function run() {
           console.error(`👉 กรุณาตรวจสอบ username/password ใน .env หรือรัน get-token.bat`);
           process.exit(1);
         }
+        if (followersRes.status < 200 || followersRes.status >= 300) {
+          throw new Error(`Chatcone followers request failed for ${account.name} / ${channel.name} (HTTP ${followersRes.status}): ${followersRes.error || JSON.stringify(followersRes.data || followersRes.raw || '').slice(0, 500)}`);
+        }
 
         const chatData = followersRes.data && followersRes.data.response && followersRes.data.response.chat;
-        const batch = chatData && Array.isArray(chatData.data) ? chatData.data : [];
+        if (!chatData || !Array.isArray(chatData.data)) {
+          throw new Error(`Unexpected followers response for ${account.name} / ${channel.name}: ${JSON.stringify(followersRes.data || followersRes.raw || '').slice(0, 500)}`);
+        }
+        const batch = chatData.data;
 
         if (!batch || batch.length === 0) {
           break;
@@ -377,12 +417,22 @@ async function run() {
         continue;
       }
 
-      console.log(`   💬 API ส่งคืน ${allFollowers.length} ห้องสนทนา (ก่อนกรองตามข้อความ)`);
+      const channelTypeCounts = {};
+      for (const follower of allFollowers) {
+        const type = String(follower.channel_type || 'unknown').toLowerCase();
+        channelTypeCounts[type] = (channelTypeCounts[type] || 0) + 1;
+      }
+      const mismatchedFollowers = allFollowers.filter(follower => !followerMatchesChannel(follower, channel));
+      const channelFollowers = allFollowers.filter(follower => followerMatchesChannel(follower, channel));
+      console.log(`   💬 API ส่งคืน ${allFollowers.length} ห้อง; แยกตาม channel_type: ${JSON.stringify(channelTypeCounts)}`);
+      if (mismatchedFollowers.length) {
+        console.log(`   ⚠️ ข้าม ${mismatchedFollowers.length} ห้องที่ channel_type ไม่ตรงกับ ${channel.name}`);
+      }
 
       let eligibleFollowers = 0;
       let followersSkippedByActivity = 0;
       let channelMessagesAdded = 0;
-      for (const follower of allFollowers) {
+      await runWithConcurrency(channelFollowers, FOLLOWER_CONCURRENCY, async (follower) => {
         const p = follower.profile || {};
         const customerName = p.facebook_name || p.line_name || p.name || 'Customer';
         const customerId = follower.social_id || follower._id;
@@ -406,12 +456,18 @@ async function run() {
             hide: false
           });
 
+          if (messagesRes.status < 200 || messagesRes.status >= 300) {
+            throw new Error(`Chatcone messages request failed for ${account.name} / ${channel.name} / follower ${follower._id} (HTTP ${messagesRes.status}): ${messagesRes.error || JSON.stringify(messagesRes.data || messagesRes.raw || '').slice(0, 500)}`);
+          }
           const msgs = messagesRes.data && messagesRes.data.response && (
             Array.isArray(messagesRes.data.response.data) 
               ? messagesRes.data.response.data 
               : (Array.isArray(messagesRes.data.response) ? messagesRes.data.response : [])
           );
 
+          if (!Array.isArray(msgs)) {
+            throw new Error(`Unexpected messages response for ${account.name} / ${channel.name} / follower ${follower._id}: ${JSON.stringify(messagesRes.data || messagesRes.raw || '').slice(0, 500)}`);
+          }
           if (!msgs || msgs.length === 0) {
             break;
           }
@@ -576,11 +632,21 @@ async function run() {
           }
         }
         await flushPending(false);
-      }
+      });
 
       await flushPending(true);
       console.log(`   📊 ${channel.name}: ตรวจ ${eligibleFollowers} ห้อง, metadata ดูเก่า ${followersSkippedByActivity} ห้อง, พบข้อความในช่วงวันที่กำหนด ${channelMessagesAdded} ข้อความ`);
     }
+  }
+
+  const commitRes = await postCustomPayload({ action: 'commit_sync' });
+  let commitBody;
+  try { commitBody = JSON.parse(commitRes.data || '{}'); } catch (e) {}
+  if (commitRes.status < 200 || commitRes.status >= 300 || !commitBody || commitBody.status !== 'success') {
+    throw new Error(`Could not commit completed sync: ${(commitBody && commitBody.message) || commitRes.error || commitRes.data || `HTTP ${commitRes.status}`}`);
+  }
+  if (Number(commitBody.rows_committed) !== totalWritten) {
+    throw new Error(`Sync commit count mismatch: staged ${totalWritten}, committed ${commitBody.rows_committed}`);
   }
 
   if (totalWritten > 0) {
@@ -596,7 +662,7 @@ async function run() {
           total_count: totalWritten,
           distributor_count: distributorWritten,
           official_count: officialWritten,
-          details: `ทยอยบันทึกข้อมูลระหว่างซิงก์ รวม ${totalWritten} แถว`
+          details: `ซิงก์ครบทุกช่องทางและแทนที่ข้อมูลเดิม รวม ${totalWritten} แถว`
         });
         console.log('   Sync summary:', summaryRes.data);
       } catch (logErr) {

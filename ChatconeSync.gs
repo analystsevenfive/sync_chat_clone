@@ -22,6 +22,7 @@
 // กำหนดชื่อชีตที่ต้องการบันทึกข้อมูล (หากไม่มีระบบจะสร้างให้อัตโนมัติ)
 const SHEET_NAME = "Chat_Logs";
 const LOG_SHEET_NAME = "Sync_Logs";
+const STAGING_SHEET_NAME = "Chat_Logs_Staging";
 
 // กำหนด Timezone สำหรับเวลาในประเทศไทย
 const TIMEZONE = "Asia/Bangkok";
@@ -393,6 +394,54 @@ function doPost(e) {
       }, 200);
     }
 
+    // Stage a full sync away from the live sheet. The live data is replaced
+    // only after every account/channel has been fetched successfully.
+    if (payload && payload.action === "begin_sync") {
+      let stagingSheet = ss.getSheetByName(STAGING_SHEET_NAME);
+      if (!stagingSheet) stagingSheet = ss.insertSheet(STAGING_SHEET_NAME);
+      stagingSheet.clear();
+      stagingSheet.getRange(1, 1, 1, getCurrentHeaders().length).setValues([getCurrentHeaders()]);
+      stagingSheet.hideSheet();
+      return createJsonResponse({ status: "success", message: "Sync staging initialized" }, 200);
+    }
+
+    if (payload && payload.action === "stage_sync") {
+      let stagingSheet = ss.getSheetByName(STAGING_SHEET_NAME);
+      if (!stagingSheet || stagingSheet.getLastRow() < 1) {
+        return createJsonResponse({ status: "error", message: "Sync staging was not initialized" }, 409);
+      }
+      const stagedRows = parseChatconePayload(payload, rawContent, e);
+      if (stagedRows.length) {
+        const writeRow = stagingSheet.getLastRow() + 1;
+        stagingSheet.getRange(writeRow, 1, stagedRows.length, stagedRows[0].length).setValues(stagedRows);
+      }
+      return createJsonResponse({ status: "success", rows_staged: stagedRows.length }, 200);
+    }
+
+    if (payload && payload.action === "commit_sync") {
+      const stagingSheet = ss.getSheetByName(STAGING_SHEET_NAME);
+      if (!stagingSheet || stagingSheet.getLastRow() < 1) {
+        return createJsonResponse({ status: "error", message: "Sync staging was not initialized" }, 409);
+      }
+      const stagedCount = Math.max(0, stagingSheet.getLastRow() - 1);
+      const stagedRows = stagedCount
+        ? stagingSheet.getRange(2, 1, stagedCount, getCurrentHeaders().length).getValues()
+        : [];
+
+      let liveSheet = ss.getSheetByName(SHEET_NAME);
+      if (!liveSheet) liveSheet = ss.insertSheet(SHEET_NAME);
+      liveSheet.clear();
+      initializeSheet(ss);
+      if (stagedRows.length) {
+        liveSheet.getRange(2, 1, stagedRows.length, getCurrentHeaders().length).setValues(stagedRows);
+        liveSheet.getRange(2, 1, stagedRows.length, 1).setNumberFormat("@");
+        liveSheet.getRange(2, 17, stagedRows.length, 1).setNumberFormat("#,##0.00");
+      }
+      stagingSheet.clear();
+      stagingSheet.getRange(1, 1, 1, getCurrentHeaders().length).setValues([getCurrentHeaders()]);
+      return createJsonResponse({ status: "success", rows_committed: stagedRows.length }, 200);
+    }
+
     // หากมีคำขอบันทึกประวัติการ Sync ลงในชีต Sync_Logs โดยตรง (เช่น บันทึกสรุปรอบที่ไม่มีข้อความใหม่ หรือสรุปหลายชุด)
     if (payload && (payload.action === "log_summary" || payload.action === "record_log")) {
       recordSyncLog(
@@ -526,8 +575,8 @@ function doGet(e) {
   return createJsonResponse({
     status: "ok",
     service: "Chatcone to Google Sheets Webhook Sync",
-    version: "1.3.0",
-    features: ["chat_logging", "response_time_tracking", "pdf_quotation_ocr", "sync_summary_logs", "account_column"],
+    version: "1.4.0",
+    features: ["chat_logging", "response_time_tracking", "pdf_quotation_ocr", "sync_summary_logs", "account_column", "staged_sync"],
     server_time: Utilities.formatDate(new Date(), TIMEZONE, DATE_FORMAT),
     instructions: "This endpoint receives POST requests from Chatcone Webhook."
   }, 200);

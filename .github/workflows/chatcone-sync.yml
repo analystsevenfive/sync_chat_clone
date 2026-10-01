@@ -10,7 +10,7 @@ jobs:
   sync-to-sheets:
     name: Sync Messages to Google Sheets
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
 
     steps:
       - name: 📥 Checkout Code
