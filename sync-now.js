@@ -163,9 +163,27 @@ async function postToGoogleSheets(events, action, extraParams = {}) {
   });
 }
 
+function getMessageTimestamp(message) {
+  if (!message || typeof message !== 'object') return message || '';
+  const sending = message.sending || {};
+  return sending.sent_at || sending.send_at || message.timestamp ||
+    message.created_at || message.createdAt || message.sent_at || message.send_at ||
+    message.time || '';
+}
+
+function normalizeTimestampValue(timestamp) {
+  let value = timestamp;
+  if (value && typeof value === 'object') {
+    value = value.timestamp || value.sent_at || value.send_at || value.created_at || value.date || value.time || '';
+  }
+  if (typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value.trim())) value = Number(value);
+  if (typeof value === 'number') return value < 100000000000 ? value * 1000 : value;
+  return value;
+}
+
 function formatThaiTime(timestamp) {
   try {
-    const d = new Date(typeof timestamp === 'number' && timestamp < 10000000000 ? timestamp * 1000 : timestamp);
+    const d = new Date(normalizeTimestampValue(timestamp));
     if (!isNaN(d.getTime())) {
       const options = { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
       const parts = new Intl.DateTimeFormat('en-GB', options).formatToParts(d);
@@ -203,7 +221,7 @@ function getSyncStartDate() {
 function isWithinSyncWindow(timestamp) {
   if (!timestamp) return true;
   try {
-    const d = new Date(typeof timestamp === 'number' && timestamp < 10000000000 ? timestamp * 1000 : timestamp);
+    const d = new Date(normalizeTimestampValue(timestamp));
     if (isNaN(d.getTime())) return true;
     return d.getTime() >= getSyncStartDate().getTime();
   } catch (e) {
@@ -282,6 +300,33 @@ async function run() {
   saveSyncedIds(new Set());
 
   const allNewEvents = [];
+  let totalWritten = 0;
+  let officialWritten = 0;
+  let distributorWritten = 0;
+  let sheetResetSent = false;
+  const chunkSize = 100;
+  async function flushPending(force) {
+    while (allNewEvents.length >= chunkSize || (force && allNewEvents.length > 0)) {
+      const chunk = allNewEvents.splice(0, chunkSize);
+      const action = sheetResetSent ? 'sync' : 'reset_and_sync';
+      const result = await postToGoogleSheets(chunk, action, { skip_log: true });
+      if (result.status < 200 || result.status >= 300) {
+        throw new Error(`Google Sheets write failed (HTTP ${result.status}): ${result.error || result.data || 'unknown error'}`);
+      }
+      let responseBody;
+      try { responseBody = JSON.parse(result.data || '{}'); } catch (e) {}
+      if (!responseBody || responseBody.status !== 'success') {
+        throw new Error(`Google Sheets rejected the batch: ${(responseBody && responseBody.message) || result.data || 'invalid response'}`);
+      }
+      sheetResetSent = true;
+      totalWritten += chunk.length;
+      for (const event of chunk) {
+        if (event.account === 'SevenfiveOfficial') officialWritten++;
+        else distributorWritten++;
+      }
+      console.log(`   ✅ เขียนลง Sheets แล้ว ${totalWritten} แถว`);
+    }
+  }
   const syncStartTime = getSyncStartDate();
 
   for (const account of ACCOUNTS) {
@@ -298,7 +343,7 @@ async function run() {
       const limitFollowers = 50;
 
       // ดึงห้องสนทนาทั้งหมดแบบ Pagination
-      while (skipFollowers < 500) {
+      while (true) {
         const followersRes = await chatconeRequest(
           account,
           channel.id,
@@ -353,7 +398,7 @@ async function run() {
         const limitMsgs = 50;
 
         // ดึงข้อความในห้องนี้ด้วย Pagination จนครบ 2 วัน
-        while (skipMsgs < 300) {
+        while (true) {
           const messagesRes = await chatconeRequest(account, channel.id, '/api/chat/messages', 'POST', {
             follower_id: follower._id,
             skip: skipMsgs,
@@ -373,19 +418,18 @@ async function run() {
 
           let reachedOld = false;
           for (const m of msgs) {
-            let rawTime = m.timestamp;
-            if (m.sending && (m.sending.sent_at || m.sending.send_at)) {
-              rawTime = m.sending.sent_at || m.sending.send_at;
-            }
+            const rawTime = getMessageTimestamp(m);
 
-          if (isWithinSyncWindow(rawTime)) {
-            followerMsgs.push(m);
+            if (isWithinSyncWindow(rawTime)) {
+              followerMsgs.push(m);
             } else {
-              reachedOld = true;
+              // API order may differ by channel. Continue pagination rather than
+              // assuming one old message means all following messages are older.
+              if (rawTime) reachedOld = true;
             }
           }
 
-          if (reachedOld || msgs.length < limitMsgs) {
+          if (msgs.length < limitMsgs || (reachedOld && msgs.every(m => !isWithinSyncWindow(getMessageTimestamp(m))))) {
             break;
           }
           skipMsgs += limitMsgs;
@@ -487,10 +531,7 @@ async function run() {
               quotationNo = '';
             }
 
-            let rawTime = m.timestamp;
-            if (m.sending && (m.sending.sent_at || m.sending.send_at)) {
-              rawTime = m.sending.sent_at || m.sending.send_at;
-            }
+            const rawTime = getMessageTimestamp(m);
 
             const timeFormatted = formatThaiTime(rawTime);
 
@@ -534,59 +575,34 @@ async function run() {
             console.log(`   - [${channel.name}] ${customerName}: ดึงข้อความใหม่ ${newCount} ข้อความ`);
           }
         }
+        await flushPending(false);
       }
 
+      await flushPending(true);
       console.log(`   📊 ${channel.name}: ตรวจ ${eligibleFollowers} ห้อง, metadata ดูเก่า ${followersSkippedByActivity} ห้อง, พบข้อความในช่วงวันที่กำหนด ${channelMessagesAdded} ข้อความ`);
     }
   }
 
-  if (allNewEvents.length > 0) {
+  if (totalWritten > 0) {
     console.log(`\n==================================================`);
-    console.log(`📤 กำลังบันทึกข้อความใหม่ทั้งหมด ${allNewEvents.length} ข้อความลง Google Sheets...`);
-    
-    // นับแยกบัญชี
-    let countDistributor = 0;
-    let countOfficial = 0;
-    for (const ev of allNewEvents) {
-      if (ev.account === 'SevenfiveOfficial') {
-        countOfficial++;
-      } else {
-        countDistributor++;
-      }
-    }
+    console.log(`📤 บันทึกลง Google Sheets แล้ว ${totalWritten} ข้อความ`);
 
-    // แบ่งส่งเป็นชุดละ 100 ข้อความ เพื่อป้องกัน timeout
-    const CHUNK_SIZE = 100;
-    const totalChunks = Math.ceil(allNewEvents.length / CHUNK_SIZE);
-    for (let i = 0; i < allNewEvents.length; i += CHUNK_SIZE) {
-      const chunk = allNewEvents.slice(i, i + CHUNK_SIZE);
-      // ชุดแรกจะสั่ง reset_and_sync เสมอ เพื่อล้างชีตเดิมแล้วเขียนหัวตาราง 16 คอลัมน์ใหม่หมดจด
-      const action = (i === 0) ? 'reset_and_sync' : 'sync';
-      const chunkIndex = Math.floor(i / CHUNK_SIZE) + 1;
-      console.log(`⏳ กำลังส่งข้อมูลชุดที่ ${chunkIndex}/${totalChunks} (${chunk.length} ข้อความ)...`);
-      const res = await postToGoogleSheets(chunk, action, { skip_log: totalChunks > 1 });
-      console.log('   ผลตอบกลับ:', res.data);
-    }
-
-    // ถ้าส่งหลายชุด ให้บันทึก Log สรุปภาพรวมทั้งหมด 1 แถวใน Sync_Logs
-    if (totalChunks > 1) {
-      console.log('📝 กำลังบันทึกประวัติสรุปภาพรวมทั้งหมดลงชีต Sync_Logs...');
+    if (totalWritten > 0) {
       try {
         const summaryRes = await postCustomPayload({
           action: 'log_summary',
           log_action: 'Batch Sync',
           status: '✅ สำเร็จ',
-          total_count: allNewEvents.length,
-          distributor_count: countDistributor,
-          official_count: countOfficial,
-          details: `บันทึกข้อความใหม่ลงชีตทั้งหมด ${allNewEvents.length} แถว (${totalChunks} ชุด)`
+          total_count: totalWritten,
+          distributor_count: distributorWritten,
+          official_count: officialWritten,
+          details: `ทยอยบันทึกข้อมูลระหว่างซิงก์ รวม ${totalWritten} แถว`
         });
-        console.log('   ผลการบันทึก Log:', summaryRes.data);
+        console.log('   Sync summary:', summaryRes.data);
       } catch (logErr) {
-        console.log('   ⚠️ ไม่สามารถบันทึก Log รวมได้:', logErr.message);
+        console.log('   Could not write sync summary:', logErr.message);
       }
     }
-
     saveSyncedIds(syncedIds);
     console.log('\n✅ บันทึกข้อความทั้งหมดลง Google Sheets สำเร็จเรียบร้อย!');
   } else {
