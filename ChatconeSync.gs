@@ -338,9 +338,10 @@ function isWithinSyncWindow(timeInput) {
  */
 function doPost(e) {
   const lock = LockService.getScriptLock();
-  // รอคิว Lock 10 วินาที เพื่อป้องกันข้อความแย่งกันเขียนแถวทับกัน (Concurrency Safe)
+  // รอคิว Lock 30 วินาที เพื่อป้องกันข้อความแย่งกันเขียนแถวทับกัน (Concurrency Safe)
+  // ค่าเดิม 10 วินาทีสั้นเกินไปเมื่อมีหลาย request ยิงพร้อมกัน (FOLLOWER_CONCURRENCY) ทำให้เกิด "Server busy, lock timeout"
   try {
-    lock.waitLock(10000);
+    lock.waitLock(30000);
   } catch (err) {
     return createJsonResponse({ status: "error", message: "Server busy, lock timeout" }, 503);
   }

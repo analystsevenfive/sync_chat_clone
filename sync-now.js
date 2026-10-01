@@ -349,18 +349,41 @@ async function run() {
   let officialWritten = 0;
   let distributorWritten = 0;
   const chunkSize = 100;
-  async function flushPending(force) {
-    while (allNewEvents.length >= chunkSize || (force && allNewEvents.length > 0)) {
-      const chunk = allNewEvents.splice(0, chunkSize);
-      const result = await postToGoogleSheets(chunk, 'stage_sync', { skip_log: true });
+  // Serialize actual writes to Google Sheets: FOLLOWER_CONCURRENCY lets several followers
+  // finish at once, and without this they'd all POST to Apps Script simultaneously and
+  // fight over its single LockService lock, causing "Server busy, lock timeout".
+  let writeQueue = Promise.resolve();
+  async function writeChunkToSheets(chunk) {
+    const writeRetries = 5;
+    let result, responseBody;
+    for (let attempt = 0; attempt <= writeRetries; attempt++) {
+      result = await postToGoogleSheets(chunk, 'stage_sync', { skip_log: true });
+      responseBody = undefined;
+      try { responseBody = JSON.parse(result.data || '{}'); } catch (e) {}
+      const isSuccess = result.status >= 200 && result.status < 300 && responseBody && responseBody.status === 'success';
+      if (isSuccess) return;
+      // Sheets อาจตอบ "Server busy, lock timeout" ชั่วคราวเมื่อหลายรอบเขียนพร้อมกัน ลองใหม่ด้วย backoff
+      const errMsg = (responseBody && responseBody.message) || result.error || result.data || `HTTP ${result.status}`;
+      const isTransient = result.status === 408 || result.status >= 500 || /lock timeout|server busy/i.test(String(errMsg));
+      if (attempt < writeRetries && isTransient) {
+        const waitMs = (attempt + 1) * 4000;
+        console.log(`   ⚠️ เขียนลง Sheets ไม่สำเร็จ (${errMsg}) กำลังลองใหม่รอบที่ ${attempt + 1}/${writeRetries} หลังรอ ${waitMs / 1000} วินาที...`);
+        await new Promise(r => setTimeout(r, waitMs));
+        continue;
+      }
       if (result.status < 200 || result.status >= 300) {
         throw new Error(`Google Sheets write failed (HTTP ${result.status}): ${result.error || result.data || 'unknown error'}`);
       }
-      let responseBody;
-      try { responseBody = JSON.parse(result.data || '{}'); } catch (e) {}
-      if (!responseBody || responseBody.status !== 'success') {
-        throw new Error(`Google Sheets rejected the batch: ${(responseBody && responseBody.message) || result.data || 'invalid response'}`);
-      }
+      throw new Error(`Google Sheets rejected the batch: ${errMsg}`);
+    }
+  }
+  async function flushPending(force) {
+    while (allNewEvents.length >= chunkSize || (force && allNewEvents.length > 0)) {
+      const chunk = allNewEvents.splice(0, chunkSize);
+      // await บน queue เดียวกันเพื่อให้การเขียนจริงไปยัง Apps Script เกิดขึ้นทีละรอบเท่านั้น
+      const task = writeQueue.then(() => writeChunkToSheets(chunk));
+      writeQueue = task.catch(() => {});
+      await task;
       totalWritten += chunk.length;
       for (const event of chunk) {
         if (event.account === 'SevenfiveOfficial') officialWritten++;
