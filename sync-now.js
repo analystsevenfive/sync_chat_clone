@@ -321,16 +321,6 @@ async function run() {
 
         allFollowers = allFollowers.concat(batch);
 
-        // ตรวจสอบว่ามีห้องไหนในหน้านี้ที่มีการคุยอยู่ในช่วง 2 วันล่าสุดบ้าง
-        const anyRecent = batch.some(item => {
-          const act = getFollowerLastAct(item);
-          return !act || isWithinSyncWindow(act);
-        });
-
-        if (!anyRecent) {
-          break; // ถ้าทุกห้องในหน้านี้เก่ากว่า 2 วันทั้งหมด แสดงว่าพ้นช่วง 2 วันแล้ว
-        }
-
         if (batch.length < limitFollowers) {
           break;
         }
@@ -342,18 +332,21 @@ async function run() {
         continue;
       }
 
-      console.log(`   💬 ตรวจพบทั้งหมด ${allFollowers.length} ห้องสนทนาในช่วง 2 วันนี้`);
+      console.log(`   💬 API ส่งคืน ${allFollowers.length} ห้องสนทนา (ก่อนกรองตามข้อความ)`);
 
+      let eligibleFollowers = 0;
+      let followersSkippedByActivity = 0;
+      let channelMessagesAdded = 0;
       for (const follower of allFollowers) {
         const p = follower.profile || {};
         const customerName = p.facebook_name || p.line_name || p.name || 'Customer';
         const customerId = follower.social_id || follower._id;
 
-        // ถ้าห้องนี้ไม่มีการคุยใน 2 วันล่าสุดเลย สามารถข้ามได้ทันที
+        // Do not trust follower activity metadata to exclude conversations. It can
+        // lag behind the actual Facebook message timestamp; filter the messages below.
         const lastAct = getFollowerLastAct(follower);
-        if (lastAct && !isWithinSyncWindow(lastAct)) {
-          continue;
-        }
+        if (lastAct && !isWithinSyncWindow(lastAct)) followersSkippedByActivity++;
+        eligibleFollowers++;
 
         let followerMsgs = [];
         let skipMsgs = 0;
@@ -385,8 +378,8 @@ async function run() {
               rawTime = m.sending.sent_at || m.sending.send_at;
             }
 
-            if (isWithinSyncWindow(rawTime)) {
-              followerMsgs.push(m);
+          if (isWithinSyncWindow(rawTime)) {
+            followerMsgs.push(m);
             } else {
               reachedOld = true;
             }
@@ -399,6 +392,7 @@ async function run() {
         }
 
         if (followerMsgs.length > 0) {
+          channelMessagesAdded += followerMsgs.length;
           // Sort oldest to newest
           followerMsgs.reverse();
 
@@ -541,6 +535,8 @@ async function run() {
           }
         }
       }
+
+      console.log(`   📊 ${channel.name}: ตรวจ ${eligibleFollowers} ห้อง, metadata ดูเก่า ${followersSkippedByActivity} ห้อง, พบข้อความในช่วงวันที่กำหนด ${channelMessagesAdded} ข้อความ`);
     }
   }
 
