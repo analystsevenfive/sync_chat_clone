@@ -145,6 +145,15 @@ async function postCustomPayload(payloadObj, retries = 2) {
         body: postData
       });
       const text = await res.text();
+      let jsonBody = null;
+      try { jsonBody = JSON.parse(text || '{}'); } catch (e) {}
+      const gotHealthCheckInsteadOfPost = jsonBody && jsonBody.status === 'ok' &&
+        jsonBody.service === 'Chatcone to Google Sheets Webhook Sync';
+      if (gotHealthCheckInsteadOfPost && attempt <= retries) {
+        console.warn(`   Google Apps Script returned its health-check response to a POST; retrying attempt ${attempt}/${retries}...`);
+        await new Promise(r => setTimeout(r, 2000 * attempt));
+        continue;
+      }
       if (text && text.trim().startsWith('<')) {
         if (attempt <= retries) {
           console.warn(`   ⚠️ Webhook ส่งกลับ HTML (Google Apps Script กำลังเตรียมพร้อม) กำลังลองใหม่รอบที่ ${attempt}/${retries}...`);
@@ -152,7 +161,7 @@ async function postCustomPayload(payloadObj, retries = 2) {
           continue;
         }
       }
-      return { status: res.status, data: text };
+      return { status: res.status, data: text, healthCheckInsteadOfPost: Boolean(gotHealthCheckInsteadOfPost) };
     } catch (err) {
       if (attempt <= retries) {
         await new Promise(r => setTimeout(r, 2000));
@@ -228,10 +237,16 @@ if (!Number.isInteger(FOLLOWER_CONCURRENCY) || FOLLOWER_CONCURRENCY < 1) {
 async function runWithConcurrency(items, limit, worker) {
   const queue = items.slice();
   const workerCount = Math.max(1, Math.min(limit, items.length));
+  let firstError = null;
   await Promise.all(new Array(workerCount).fill(0).map(async () => {
-    while (queue.length) {
+    while (queue.length && !firstError) {
       const item = queue.shift();
-      await worker(item);
+      try {
+        await worker(item);
+      } catch (error) {
+        firstError = error;
+        throw error;
+      }
     }
   }));
 }
@@ -386,7 +401,7 @@ async function run() {
       if (isSuccess) return;
       // Sheets อาจตอบ "Server busy, lock timeout" ชั่วคราวเมื่อหลายรอบเขียนพร้อมกัน ลองใหม่ด้วย backoff
       const errMsg = (responseBody && responseBody.message) || result.error || result.data || `HTTP ${result.status}`;
-      const isTransient = result.status === 408 || result.status >= 500 || /lock timeout|server busy/i.test(String(errMsg));
+      const isTransient = result.status === 408 || result.status >= 500 || result.healthCheckInsteadOfPost || /lock timeout|server busy/i.test(String(errMsg));
       if (attempt < writeRetries && isTransient) {
         const waitMs = (attempt + 1) * 4000;
         console.log(`   ⚠️ เขียนลง Sheets ไม่สำเร็จ (${errMsg}) กำลังลองใหม่รอบที่ ${attempt + 1}/${writeRetries} หลังรอ ${waitMs / 1000} วินาที...`);
