@@ -213,10 +213,17 @@ function getAccountType(account, channel) {
 }
 
 const customDaysArg = process.argv.find(arg => arg.startsWith('--days='));
-const SYNC_DAYS = customDaysArg ? parseInt(customDaysArg.split('=')[1], 10) : 3;
+const requestedSyncDays = customDaysArg ? Number(customDaysArg.split('=')[1]) : 3;
+if (!Number.isInteger(requestedSyncDays) || requestedSyncDays < 1) {
+  throw new Error('--days must be a positive whole number (for example, --days=3).');
+}
+const SYNC_DAYS = requestedSyncDays;
 
 // จำนวนห้องสนทนาที่ดึงพร้อมกันต่อช่องทาง เพื่อลดเวลารวมของการ Sync (ป้องกัน GitHub Actions timeout)
-const FOLLOWER_CONCURRENCY = parseInt(process.env.FOLLOWER_CONCURRENCY || '8', 10);
+const FOLLOWER_CONCURRENCY = Number(process.env.FOLLOWER_CONCURRENCY || '8');
+if (!Number.isInteger(FOLLOWER_CONCURRENCY) || FOLLOWER_CONCURRENCY < 1) {
+  throw new Error('FOLLOWER_CONCURRENCY must be a positive whole number.');
+}
 
 async function runWithConcurrency(items, limit, worker) {
   const queue = items.slice();
@@ -270,17 +277,32 @@ function getFollowerLastAct(follower) {
 function followerMatchesChannel(follower, channel) {
   const expectedName = String(channel && channel.name || '').toLowerCase();
   const expectedPlatform = expectedName.includes('facebook') ? 'facebook'
-    : (expectedName.includes('line') ? 'line' : '');
-  if (!expectedPlatform) return true;
+    : (expectedName.includes('line') ? 'line'
+      : (expectedName.includes('webchat') || expectedName.includes('other') ? 'webchat' : ''));
+  if (!expectedPlatform) return false;
+
+  // Prefer explicit channel IDs when the followers API includes them. This
+  // prevents a follower returned by a broad account query being assigned to
+  // whichever channel happens to be processed first.
+  const followerChannelIds = [
+    follower && follower.channel_id,
+    follower && follower.channelId,
+    follower && follower.channel && (follower.channel._id || follower.channel.id || follower.channel.channel_id)
+  ].filter(Boolean).map(String);
+  if (followerChannelIds.length && channel && channel.id) {
+    return followerChannelIds.includes(String(channel.id));
+  }
 
   const actual = String(
     follower && (follower.channel_type || follower.platform ||
       (follower.channel && (follower.channel.type || follower.channel.name))) || ''
   ).toLowerCase();
   if (!actual) return true;
-  if (/facebook|messenger|^fb$/.test(actual)) return expectedPlatform === 'facebook';
+  if (/facebook|messenger|^fb(?:$|[_\s-])/.test(actual)) return expectedPlatform === 'facebook';
   if (/^line$|line[_\s-]*oa/.test(actual)) return expectedPlatform === 'line';
-  return true;
+  if (/webchat|livechat|website|web[_\s-]*chat|^other$/.test(actual)) return expectedPlatform === 'webchat';
+  // Unknown explicit types must not leak into another channel's rows.
+  return false;
 }
 
 /**
@@ -626,9 +648,10 @@ async function run() {
             const responseTime = (senderType === 'Agent' && m.response_time !== undefined && m.response_time !== null) ? m.response_time : null;
 
             let channelDisplayName = channel.name;
-            if (follower.channel_type) {
-              channelDisplayName = follower.channel_type === 'line' ? 'LINE OA' : (follower.channel_type === 'facebook' ? 'Facebook Messenger' : follower.channel_type.toUpperCase());
-            }
+            const actualChannelType = String(follower.channel_type || follower.platform || '').toLowerCase();
+            if (/^line$|line[_\s-]*oa/.test(actualChannelType)) channelDisplayName = 'LINE OA';
+            else if (/facebook|messenger|^fb(?:$|[_\s-])/.test(actualChannelType)) channelDisplayName = 'Facebook Messenger';
+            else if (/webchat|livechat|website|web[_\s-]*chat|^other$/.test(actualChannelType)) channelDisplayName = 'Webchat / Other';
 
             allNewEvents.push({
               timestamp: timeFormatted,

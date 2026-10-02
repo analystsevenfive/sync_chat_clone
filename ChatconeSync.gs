@@ -62,6 +62,32 @@ const KNOWN_ACCOUNTS = {
   '28976110988648055': 'Sevenfive Distributor'
 };
 
+// Channel IDs are used as a reliable fallback when Chatcone omits a readable
+// channel/platform name from a webhook event.
+const KNOWN_CHANNEL_NAMES = {
+  '6881b04f2d07422b089ec4c8': 'LINE OA',
+  '68819f44dd184bb7f86ac384': 'Facebook Messenger',
+  '68844b588be8b73f96d987f3': 'Webchat / Other',
+  '6881c67ddd184b54a06b025c': 'Facebook Messenger',
+  '68819f3edd184bf5276ac35f': 'LINE OA'
+};
+
+function getChannelName(item) {
+  const rawChannel = item && item.channel;
+  if (typeof rawChannel === 'string' && rawChannel.trim()) return rawChannel.trim();
+  if (rawChannel && typeof rawChannel === 'object') {
+    const nestedName = rawChannel.name || rawChannel.type || rawChannel.channel_type;
+    if (nestedName) return String(nestedName);
+  }
+
+  const directName = item && (item.platform || item.source || item.channel_type);
+  if (typeof directName === 'string' && directName.trim()) return directName.trim();
+
+  const channelId = String((item && (item.channel_id || item.channelId ||
+    (rawChannel && typeof rawChannel === 'object' && (rawChannel.id || rawChannel._id || rawChannel.channel_id)))) || '').toLowerCase();
+  return KNOWN_CHANNEL_NAMES[channelId] || 'Chatcone';
+}
+
 // รายชื่อลูกค้าเฉพาะของ Sevenfive Distributor
 const DISTRIBUTOR_KNOWN_NAMES = [
   'vatsana',
@@ -809,7 +835,7 @@ function parseChatconePayload(payload, rawContent, e) {
     const account = resolveAccountName(item, payload, e, "Sevenfive Distributor");
 
     // 3. Channel / Platform (LINE, Facebook, IG, Webchat)
-    const channel = item.channel || item.platform || item.source || (item.channel_type ? item.channel_type : "Chatcone");
+    const channel = getChannelName(item);
     const accountType = item.account_type || getAccountType(account, channel);
 
     // 4. Sender Type (Customer หรือ Agent / Bot)
